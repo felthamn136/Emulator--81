@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Emulator-81
+Exec=zx81_emulator
+Icon=io.github.felthamn136.Emulator81
+Terminal=false
+Categories=Game;Emulator;

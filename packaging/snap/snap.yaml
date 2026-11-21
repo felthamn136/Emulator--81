@@ -1,0 +1,28 @@
+name: emulator-81
+version: '0.1.0'
+summary: Sinclair ZX81 emulator
+description: |
+  Emulator-81 is a Rust and Macroquad ZX81 emulator with a CRT-style display,
+  a games library, and support for ZX81 .P program files.
+base: core26
+architectures:
+  - amd64
+confinement: strict
+grade: stable
+apps:
+  emulator-81:
+    command: bin/emulator-81
+    desktop: meta/gui/emulator-81.desktop
+    plugs:
+      - desktop
+      - desktop-legacy
+      - x11
+      - wayland
+      - opengl
+      - home
+      - gpu-2604
+plugs:
+  gpu-2604:
+    interface: content
+    target: $SNAP/gpu-2604
+    default-provider: mesa-2604

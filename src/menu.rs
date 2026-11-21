@@ -1,0 +1,338 @@
+use macroquad::prelude::*;
+
+use crate::{app::AppState, experience::Experience};
+
+pub const BAR_HEIGHT: f32 = 36.0;
+const ROW_HEIGHT: f32 = 30.0;
+const MENU_WIDTH: f32 = 250.0;
+const TABS: [(&str, f32); 5] = [
+    ("File", 75.0),
+    ("Settings", 105.0),
+    ("Machine", 105.0),
+    ("View", 75.0),
+    ("Help", 75.0),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    Open,
+    BrowseGamesLibrary,
+    Save,
+    Screenshot,
+    Settings,
+    Setting(usize),
+    Pause,
+    Step,
+    Reset,
+    PowerCycle,
+    Fullscreen,
+    VirtualKeyboard,
+    Status,
+    Debug,
+    About,
+}
+
+const FILE: &[(&str, Action)] = &[
+    ("Open File", Action::Open),
+    ("Browse Emulator Games Library", Action::BrowseGamesLibrary),
+    ("Save File", Action::Save),
+    ("Save CRT Screenshot", Action::Screenshot),
+];
+const SETTINGS: &[(&str, Action)] = &[
+    ("Settings panel", Action::Settings),
+    ("Fullscreen", Action::Fullscreen),
+    ("Fullscreen confirmation", Action::Setting(7)),
+    ("CRT warm-up", Action::Setting(0)),
+    ("Scanlines", Action::Setting(1)),
+    ("Reflections", Action::Setting(2)),
+    ("Curvature", Action::Setting(3)),
+    ("Bloom", Action::Setting(4)),
+    ("Phosphor glow", Action::Setting(5)),
+    ("Flicker", Action::Setting(6)),
+];
+const MACHINE: &[(&str, Action)] = &[
+    ("Pause / Resume", Action::Pause),
+    ("Single step", Action::Step),
+    ("Reset", Action::Reset),
+    ("Power cycle", Action::PowerCycle),
+];
+const VIEW: &[(&str, Action)] = &[
+    ("Fullscreen", Action::Fullscreen),
+    ("Virtual keyboard", Action::VirtualKeyboard),
+    ("Status panel", Action::Status),
+    ("Debug overlay", Action::Debug),
+];
+const HELP: &[(&str, Action)] = &[("About Emulator-81", Action::About)];
+const ITEMS: [&[(&str, Action)]; 5] = [FILE, SETTINGS, MACHINE, VIEW, HELP];
+
+pub fn content_rect(width: f32, height: f32) -> Rect {
+    let padding = 12.0_f32.min(width.max(0.0) / 2.0);
+    let top = BAR_HEIGHT.min(height.max(0.0));
+    let vertical_padding = 12.0_f32.min((height - top).max(0.0) / 2.0);
+    Rect::new(
+        padding,
+        top + vertical_padding,
+        (width - 2.0 * padding).max(0.0),
+        (height - top - 2.0 * vertical_padding).max(0.0),
+    )
+}
+
+fn tab_rect(index: usize, width: f32) -> Rect {
+    let scale = (width / TABS.iter().map(|(_, w)| w).sum::<f32>()).clamp(0.0, 1.0);
+    let x = TABS[..index].iter().map(|(_, w)| w).sum::<f32>() * scale;
+    Rect::new(x, 0.0, TABS[index].1 * scale, BAR_HEIGHT)
+}
+
+fn dropdown_rect(index: usize, width: f32) -> Rect {
+    let menu_width = if index <= 1 { 310.0 } else { MENU_WIDTH };
+    let w = menu_width.min(width.max(0.0));
+    let x = tab_rect(index, width).x.min((width - w).max(0.0));
+    Rect::new(x, BAR_HEIGHT, w, ROW_HEIGHT * ITEMS[index].len() as f32)
+}
+
+fn shortcut(action: Action) -> Option<&'static str> {
+    match action {
+        Action::Settings => Some("F1"),
+        Action::Setting(1) => Some("F2"),
+        Action::Setting(2) => Some("F3"),
+        Action::Setting(3) => Some("F4"),
+        Action::Setting(6) => Some("F6"),
+        Action::Status => Some("F7"),
+        Action::Pause => Some("F8"),
+        Action::Step => Some("F9"),
+        Action::Reset => Some("F10"),
+        Action::Fullscreen => Some("F11"),
+        Action::Debug => Some("F12"),
+        Action::PowerCycle => Some("Ctrl+R"),
+        _ => None,
+    }
+}
+
+#[derive(Default)]
+pub struct Menu {
+    open: Option<usize>,
+}
+
+impl Menu {
+    pub fn is_open(&self) -> bool {
+        self.open.is_some()
+    }
+
+    pub fn input(&mut self, width: f32) -> (bool, Option<Action>) {
+        if self.is_open() && is_key_pressed(KeyCode::Escape) {
+            self.open = None;
+            return (true, None);
+        }
+        if !is_mouse_button_pressed(MouseButton::Left) {
+            return (false, None);
+        }
+        self.click(mouse_position().into(), width)
+    }
+
+    fn click(&mut self, position: Vec2, width: f32) -> (bool, Option<Action>) {
+        for index in 0..TABS.len() {
+            if tab_rect(index, width).contains(position) {
+                self.open = if self.open == Some(index) {
+                    None
+                } else {
+                    Some(index)
+                };
+                return (true, None);
+            }
+        }
+        if let Some(index) = self.open.take() {
+            let rect = dropdown_rect(index, width);
+            if rect.contains(position) {
+                let row = ((position.y - rect.y) / ROW_HEIGHT) as usize;
+                return (true, ITEMS[index].get(row).map(|item| item.1));
+            }
+            return (true, None);
+        }
+        (position.y < BAR_HEIGHT, None)
+    }
+
+    pub fn draw(&self, width: f32, state: &AppState, experience: &Experience, paused: bool) {
+        draw_rectangle(
+            0.0,
+            0.0,
+            width,
+            BAR_HEIGHT,
+            Color::from_rgba(27, 29, 30, 255),
+        );
+        for (index, (title, _)) in TABS.iter().enumerate() {
+            let rect = tab_rect(index, width);
+            if self.open == Some(index) {
+                draw_rectangle(rect.x, rect.y, rect.w, rect.h, DARKGRAY);
+            }
+            draw_text(title, rect.x + 10.0, 24.0, 19.0, WHITE);
+        }
+        if state.program_loading && width >= 600.0 {
+            draw_text(
+                "LOADING .P...  F10 CANCEL",
+                width - 235.0,
+                24.0,
+                16.0,
+                LIGHTGRAY,
+            );
+        }
+        if let Some(index) = self.open {
+            let rect = dropdown_rect(index, width);
+            draw_rectangle(
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                Color::from_rgba(34, 36, 37, 255),
+            );
+            draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, GRAY);
+            let mouse: Vec2 = mouse_position().into();
+            for (row, &(label, action)) in ITEMS[index].iter().enumerate() {
+                let y = rect.y + row as f32 * ROW_HEIGHT;
+                if Rect::new(rect.x, y, rect.w, ROW_HEIGHT).contains(mouse) {
+                    draw_rectangle(rect.x, y, rect.w, ROW_HEIGHT, DARKGRAY);
+                }
+                let checked = match action {
+                    Action::Setting(0) => experience.settings.enabled,
+                    Action::Setting(1) => state.scanlines_enabled,
+                    Action::Setting(2) => state.crt_reflections_enabled,
+                    Action::Setting(3) => state.crt_curvature_enabled,
+                    Action::Setting(4) => state.bloom_enabled,
+                    Action::Setting(5) => state.glow_enabled,
+                    Action::Setting(6) => state.flicker_enabled,
+                    Action::Setting(7) => state.fullscreen_confirmation,
+                    Action::Pause => paused,
+                    Action::Fullscreen => state.fullscreen,
+                    Action::VirtualKeyboard => state.show_virtual_keyboard,
+                    Action::Status => state.show_status,
+                    Action::Debug => state.show_debug,
+                    _ => false,
+                };
+                let is_setting = matches!(action, Action::Setting(_));
+                if is_setting {
+                    let value = if checked { "ON" } else { "OFF" };
+                    draw_text(
+                        value,
+                        rect.x + rect.w - 10.0 - measure_text(value, None, 18, 1.0).width,
+                        y + 21.0,
+                        18.0,
+                        WHITE,
+                    );
+                } else if checked {
+                    draw_text("*", rect.x + 8.0, y + 22.0, 19.0, WHITE);
+                }
+                let right = rect.x + rect.w - if is_setting { 68.0 } else { 10.0 };
+                let label_right = if let Some(key) = shortcut(action) {
+                    let key_x = right - measure_text(key, None, 16, 1.0).width;
+                    draw_text(key, key_x, y + 21.0, 16.0, LIGHTGRAY);
+                    key_x - 8.0
+                } else if is_setting {
+                    rect.x + rect.w - 58.0
+                } else {
+                    right
+                };
+                let label_x = rect.x + 25.0;
+                let label_width = measure_text(label, None, 18, 1.0).width;
+                let font_scale = ((label_right - label_x).max(0.0) / label_width).min(1.0);
+                draw_text_ex(
+                    label,
+                    label_x,
+                    y + 21.0,
+                    TextParams {
+                        font_size: 18,
+                        font_scale,
+                        color: WHITE,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selects_menu_items_and_dismisses_outside_clicks() {
+        let mut menu = Menu::default();
+        assert_eq!(menu.click(vec2(10.0, 10.0), 800.0), (true, None));
+        assert!(menu.is_open());
+        assert_eq!(
+            menu.click(vec2(30.0, BAR_HEIGHT + 5.0), 800.0),
+            (true, Some(Action::Open))
+        );
+        assert!(!menu.is_open());
+        menu.click(vec2(10.0, 10.0), 800.0);
+        assert_eq!(
+            menu.click(vec2(30.0, BAR_HEIGHT + ROW_HEIGHT + 5.0), 800.0),
+            (true, Some(Action::BrowseGamesLibrary))
+        );
+        assert!(!menu.is_open());
+        menu.click(vec2(90.0, 10.0), 800.0);
+        assert_eq!(
+            menu.click(vec2(100.0, BAR_HEIGHT + ROW_HEIGHT * 4.0 + 5.0), 800.0),
+            (true, Some(Action::Setting(1)))
+        );
+        menu.click(vec2(10.0, 10.0), 800.0);
+        assert_eq!(menu.click(vec2(500.0, 500.0), 800.0), (true, None));
+        assert!(!menu.is_open());
+        menu.click(vec2(10.0, 10.0), 800.0);
+        assert_eq!(
+            menu.click(vec2(30.0, BAR_HEIGHT + ROW_HEIGHT * 3.0 + 5.0), 800.0),
+            (true, Some(Action::Screenshot))
+        );
+    }
+
+    #[test]
+    fn fullscreen_is_available_in_settings_and_view() {
+        let mut menu = Menu::default();
+        for (tab_x, row) in [(90.0, 1.0), (300.0, 0.0), (90.0, 1.0)] {
+            assert_eq!(menu.click(vec2(tab_x, 10.0), 800.0), (true, None));
+            let dropdown = dropdown_rect(menu.open.unwrap(), 800.0);
+            assert_eq!(
+                menu.click(
+                    vec2(dropdown.x + 10.0, BAR_HEIGHT + ROW_HEIGHT * row + 5.0),
+                    800.0
+                ),
+                (true, Some(Action::Fullscreen))
+            );
+            assert!(!menu.is_open());
+        }
+    }
+
+    #[test]
+    fn shortcut_labels_follow_menu_actions() {
+        for (action, expected) in [
+            (Action::Settings, "F1"),
+            (Action::Setting(1), "F2"),
+            (Action::Setting(2), "F3"),
+            (Action::Setting(3), "F4"),
+            (Action::Setting(6), "F6"),
+            (Action::Status, "F7"),
+            (Action::Pause, "F8"),
+            (Action::Step, "F9"),
+            (Action::Reset, "F10"),
+            (Action::Fullscreen, "F11"),
+            (Action::Debug, "F12"),
+            (Action::PowerCycle, "Ctrl+R"),
+        ] {
+            assert!(ITEMS
+                .iter()
+                .any(|items| items.iter().any(|(_, item)| *item == action)));
+            assert_eq!(shortcut(action), Some(expected));
+        }
+        assert_eq!(shortcut(Action::VirtualKeyboard), None);
+    }
+
+    #[test]
+    fn help_menu_opens_about() {
+        let mut menu = Menu::default();
+        assert_eq!(menu.click(vec2(390.0, 10.0), 800.0), (true, None));
+        let dropdown = dropdown_rect(menu.open.unwrap(), 800.0);
+        assert_eq!(
+            menu.click(vec2(dropdown.x + 10.0, BAR_HEIGHT + 5.0), 800.0),
+            (true, Some(Action::About))
+        );
+    }
+}
