@@ -1,7 +1,10 @@
 #!/bin/sh
 set -eu
 
-export LD_LIBRARY_PATH="$SNAP/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$SNAP/usr/lib/x86_64-linux-gnu:$SNAP/usr/lib/x86_64-linux-gnu/pulseaudio${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export XKB_CONFIG_ROOT="$SNAP/usr/share/X11/xkb"
+export ALSA_CONFIG_PATH="$SNAP/etc/alsa.conf"
+export ALSA_CONFIG_DIR="$SNAP/usr/share/alsa"
+export ALSA_PLUGIN_DIR="$SNAP/usr/lib/x86_64-linux-gnu/alsa-lib"
 export GTK_USE_PORTAL=1
 exec "$SNAP/gpu-2604/bin/gpu-2604-provider-wrapper" "$SNAP/usr/bin/zx81_emulator" "$@"

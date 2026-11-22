@@ -4,10 +4,19 @@ use crate::emulator::{EmulatorCore, CPU_HZ};
 
 const KEY_CYCLES: u64 = CPU_HZ as u64 / 5;
 const PROMPT_TIMEOUT: u64 = CPU_HZ as u64 * 20;
+const PROMPT_STABLE_CYCLES: u64 = CPU_HZ as u64;
 const LOAD_SETTLE_CYCLES: u64 = CPU_HZ as u64 * 5;
+const LOAD_COMMAND: &[u8] = &[0xef, 0x0b, 0x0b];
 const LOAD_KEYS: &[&[(usize, usize)]] =
     &[&[(6, 3)], &[(0, 0), (5, 0)], &[(0, 0), (5, 0)], &[(6, 0)]];
 const RUN_KEYS: &[&[(usize, usize)]] = &[&[(2, 3)], &[(6, 0)]];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LoadMode {
+    #[default]
+    Standard,
+    Instant,
+}
 
 enum Phase {
     AwaitPrompt,
@@ -29,9 +38,11 @@ enum Phase {
 pub struct AutoLoad {
     phase: Phase,
     elapsed: u64,
+    prompt_stable_cycles: u64,
     bytes: Vec<u8>,
     display_file: u16,
     self_starting: bool,
+    mode: LoadMode,
 }
 
 impl AutoLoad {
@@ -39,7 +50,20 @@ impl AutoLoad {
         matches!(self.phase, Phase::Playing)
     }
 
+    pub fn is_instant(&self) -> bool {
+        self.mode == LoadMode::Instant
+    }
+
+    #[cfg(test)]
     pub fn from_path(core: &mut EmulatorCore, path: &Path) -> io::Result<Self> {
+        Self::from_path_with_mode(core, path, LoadMode::Standard)
+    }
+
+    pub fn from_path_with_mode(
+        core: &mut EmulatorCore,
+        path: &Path,
+        mode: LoadMode,
+    ) -> io::Result<Self> {
         if !path
             .extension()
             .and_then(|ext| ext.to_str())
@@ -50,19 +74,43 @@ impl AutoLoad {
                 "expected a .P file",
             ));
         }
-        Self::from_bytes(core, std::fs::read(path)?)
+        Self::from_bytes_with_mode(core, std::fs::read(path)?, mode)
     }
 
+    #[cfg(test)]
     pub(crate) fn from_bytes(core: &mut EmulatorCore, bytes: Vec<u8>) -> io::Result<Self> {
+        Self::from_bytes_with_mode(core, bytes, LoadMode::Standard)
+    }
+
+    pub(crate) fn from_bytes_with_mode(
+        core: &mut EmulatorCore,
+        bytes: Vec<u8>,
+        mode: LoadMode,
+    ) -> io::Result<Self> {
         // Validate the tape before examining its saved display-file pointer.
-        let tape = crate::tape::Tape::from_p(&bytes)?;
+        let mut tape = crate::tape::Tape::from_p(&bytes)?;
         let display_file = u16::from_le_bytes([bytes[3], bytes[4]]);
         let end = usize::from(u16::from_le_bytes([bytes[11], bytes[12]]));
+        if end > core.ram_end() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                ".P file exceeds the selected RAM size",
+            ));
+        }
         if !(0x407d..end).contains(&usize::from(display_file)) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 ".P file has an invalid display-file pointer",
             ));
+        }
+        if mode == LoadMode::Instant {
+            if !core.supports_instant_load() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "instant loading requires a compatible ZX81 ROM",
+                ));
+            }
+            tape.enable_instant(&bytes);
         }
         core.insert_tape(tape)?;
         core.reset();
@@ -70,9 +118,11 @@ impl AutoLoad {
         Ok(Self {
             phase: Phase::AwaitPrompt,
             elapsed: 0,
+            prompt_stable_cycles: 0,
             bytes,
             display_file,
             self_starting,
+            mode,
         })
     }
 
@@ -82,6 +132,11 @@ impl AutoLoad {
         match self.phase {
             Phase::AwaitPrompt => {
                 if core.basic_cursor_visible() {
+                    self.prompt_stable_cycles += u64::from(cycles);
+                } else {
+                    self.prompt_stable_cycles = 0;
+                }
+                if self.prompt_stable_cycles >= PROMPT_STABLE_CYCLES {
                     self.start_typing(core, false)?;
                 } else if self.elapsed >= PROMPT_TIMEOUT {
                     return Err(io::Error::new(
@@ -101,6 +156,13 @@ impl AutoLoad {
                         pressed: false,
                     };
                 } else if key + 1 < keys.len() {
+                    if !run && key + 1 == keys.len() - 1 && !core.basic_input_matches(LOAD_COMMAND)
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "ZX81 did not accept the LOAD command",
+                        ));
+                    }
                     set_keys(core, keys[key + 1], true)?;
                     self.phase = Phase::Typing {
                         run,
@@ -275,5 +337,30 @@ mod tests {
                 .kind(),
             io::ErrorKind::TimedOut
         );
+    }
+
+    #[test]
+    fn rejects_a_program_larger_than_selected_ram_without_resetting() {
+        let mut core = EmulatorCore::new();
+        core.set_ram_size(crate::memory::RamSize::OneK);
+        core.load_rom_bytes(&[0; ROM_SIZE]).unwrap();
+        core.run_cycles(1000).unwrap();
+        let before = core.cpu_snapshot().unwrap().cycles;
+        let mut bytes = vec![0; 0x4401 - 0x4009];
+        bytes[3..5].copy_from_slice(&0x407du16.to_le_bytes());
+        bytes[11..13].copy_from_slice(&0x4401u16.to_le_bytes());
+        for mode in [LoadMode::Standard, LoadMode::Instant] {
+            let error = AutoLoad::from_bytes_with_mode(&mut core, bytes.clone(), mode)
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(error.to_string().contains("selected RAM size"));
+            assert_eq!(core.cpu_snapshot().unwrap().cycles, before);
+        }
+
+        let mut fits = vec![0; 0x4400 - 0x4009];
+        fits[3..5].copy_from_slice(&0x407du16.to_le_bytes());
+        fits[11..13].copy_from_slice(&0x4400u16.to_le_bytes());
+        assert!(AutoLoad::from_bytes(&mut core, fits).is_ok());
     }
 }

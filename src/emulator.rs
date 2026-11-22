@@ -5,7 +5,7 @@ use macroquad::prelude::{draw_rectangle, Color, Rect, BLACK};
 
 use crate::{
     experience::ScreenState,
-    memory::Memory,
+    memory::{Memory, RamSize},
     tape::Tape,
     video,
     viewport::{self, ScreenFrame},
@@ -25,6 +25,7 @@ pub struct EmulatorCore {
     frames: u64,
     display_buffer: Option<Vec<u8>>,
     machine: Option<CpuMachine>,
+    ram_size: RamSize,
 }
 
 struct CpuMachine {
@@ -62,7 +63,7 @@ impl EmulatorCore {
     }
 
     pub fn load_rom_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
-        let memory = Memory::new(bytes)?;
+        let memory = Memory::with_ram_size(bytes, self.ram_size)?;
         let mut cpu = z80::Z80::new();
         cpu.init();
         cpu.irq_data = 0xff;
@@ -76,6 +77,37 @@ impl EmulatorCore {
         });
         self.display_buffer = Some(vec![255; SCREEN_WIDTH * SCREEN_HEIGHT]);
         Ok(())
+    }
+
+    pub fn set_ram_size(&mut self, ram_size: RamSize) {
+        if self.ram_size != ram_size {
+            self.ram_size = ram_size;
+            if let Some(machine) = &mut self.machine {
+                machine.memory.set_ram_size(ram_size);
+            }
+        }
+    }
+
+    pub(crate) fn ram_end(&self) -> usize {
+        0x4000 + self.ram_size.bytes()
+    }
+
+    pub(crate) fn supports_instant_load(&self) -> bool {
+        let Some(machine) = &self.machine else {
+            return false;
+        };
+        let bundled = include_bytes!("../rom/zx81.rom");
+        (0x0340..0x03a2).all(|address| machine.memory.read8(address) == bundled[address as usize])
+    }
+
+    pub(crate) fn tape_elapsed(&self) -> Option<u64> {
+        self.machine.as_ref().map(|machine| machine.tape.elapsed())
+    }
+
+    pub(crate) fn tape_audio_samples(&self, start: u64, sample_rate: u32) -> Vec<f32> {
+        self.machine.as_ref().map_or_else(Vec::new, |machine| {
+            machine.tape.audio_samples(start, sample_rate)
+        })
     }
 
     pub fn is_loaded(&self) -> bool {
@@ -110,6 +142,26 @@ impl EmulatorCore {
         match &mut self.machine {
             Some(machine) => {
                 machine.memory.set_tape_input(machine.tape.level());
+                if machine.cpu.pc == 0x034c {
+                    let return_address = u16::from_le_bytes([
+                        machine.memory.read8(machine.cpu.sp),
+                        machine.memory.read8(machine.cpu.sp.wrapping_add(1)),
+                    ]);
+                    // Let the ROM's initial tape synchronization time out normally.
+                    if matches!(return_address, 0x0369 | 0x037f) {
+                        if let Some(byte) = machine.tape.take_instant_byte() {
+                            let flags = (byte & 0xa8)
+                                | if byte == 0 { 0x40 } else { 0 }
+                                | if byte.count_ones() % 2 == 0 { 0x04 } else { 0 }
+                                | 0x01;
+                            machine.cpu.set_bc(u16::from(byte));
+                            machine
+                                .cpu
+                                .set_af((machine.cpu.af() & 0xff00) | u16::from(flags));
+                            machine.cpu.pc = 0x03a1;
+                        }
+                    }
+                }
                 let was_halted = machine.cpu.halted;
                 let start = machine.line_cycles;
                 let mut cycles = machine.cpu.step(&mut machine.memory);
@@ -282,6 +334,24 @@ impl EmulatorCore {
             }
         }
         false
+    }
+
+    pub(crate) fn basic_input_matches(&self, input: &[u8]) -> bool {
+        let Some(machine) = &self.machine else {
+            return false;
+        };
+        let memory = &machine.memory;
+        let start = usize::from(u16::from_le_bytes([
+            memory.read8(0x4014),
+            memory.read8(0x4015),
+        ]));
+        if start < 0x4000 || start + input.len() > self.ram_end() {
+            return false;
+        }
+        input
+            .iter()
+            .enumerate()
+            .all(|(offset, &byte)| memory.read8((start + offset) as u16) == byte)
     }
 
     /// The ROM's successful LOAD report must be dismissed before typing RUN.
@@ -508,6 +578,26 @@ mod tests {
     }
 
     #[test]
+    fn selected_ram_size_is_used_for_loaded_and_future_machines() {
+        let mut core = EmulatorCore::new();
+        core.set_ram_size(RamSize::OneK);
+        core.load_rom_bytes(&[0; crate::memory::ROM_SIZE]).unwrap();
+        let machine = core.machine.as_mut().unwrap();
+        machine.memory.write8(0x4000, 0x12);
+        assert_eq!(machine.memory.read8(0x4400), 0x12);
+
+        core.set_ram_size(RamSize::SixteenK);
+        let machine = core.machine.as_mut().unwrap();
+        machine.memory.write8(0x4000, 0x34);
+        assert_eq!(machine.memory.read8(0x4400), 0);
+
+        core.load_rom_bytes(&[0; crate::memory::ROM_SIZE]).unwrap();
+        let machine = core.machine.as_mut().unwrap();
+        machine.memory.write8(0x4000, 0x56);
+        assert_eq!(machine.memory.read8(0x4400), 0);
+    }
+
+    #[test]
     fn synthetic_rom_executes_and_reset_restores_cpu_and_ram() {
         let mut core = EmulatorCore::new();
         let mut rom = vec![0; crate::memory::ROM_SIZE];
@@ -583,6 +673,173 @@ mod tests {
         let start = u16::from_le_bytes([memory.read8(0x4014), memory.read8(0x4015)]);
         assert_eq!(memory.read8(start), 0xf5); // PRINT
         assert_eq!(memory.read8(start + 1), 0x1a); // comma
+    }
+
+    #[test]
+    fn bundled_rom_autoloads_a_one_k_basic_program() {
+        let mut core = EmulatorCore::new();
+        core.set_ram_size(RamSize::OneK);
+        core.load_rom_bytes(include_bytes!("../rom/zx81.rom"))
+            .unwrap();
+        core.run_cycles(CPU_HZ * 15).unwrap();
+        for key in [(3, 0), (4, 0), (5, 0), (3, 0), (6, 0)] {
+            core.set_key(key.0, key.1, true).unwrap();
+            core.run_cycles(CPU_HZ / 5).unwrap();
+            core.set_key(key.0, key.1, false).unwrap();
+            core.run_cycles(CPU_HZ / 5).unwrap();
+        }
+        core.run_cycles(CPU_HZ).unwrap();
+        let program = core.save_program_bytes().unwrap();
+        assert_eq!(&program[0x407d - 0x4009..0x407f - 0x4009], &[0, 10]);
+        let display_file = u16::from_le_bytes([program[3], program[4]]);
+        for mode in [
+            crate::autoload::LoadMode::Standard,
+            crate::autoload::LoadMode::Instant,
+        ] {
+            let mut loader =
+                crate::autoload::AutoLoad::from_bytes_with_mode(&mut core, program.clone(), mode)
+                    .unwrap();
+            let mut saw_load_command = false;
+            let mut completed = false;
+            for _ in 0..5000 {
+                let cycles = if loader.is_playing() {
+                    core.run_cycles_until_tape_stops(CPU_HZ / 10).unwrap()
+                } else {
+                    core.run_cycles(CPU_HZ / 60).unwrap()
+                };
+                saw_load_command |= core.basic_input_matches(&[0xef, 0x0b, 0x0b]);
+                if loader.advance(&mut core, cycles).unwrap() {
+                    completed = true;
+                    break;
+                }
+            }
+            assert!(
+                saw_load_command,
+                "LOAD command was not entered for {mode:?}"
+            );
+            assert!(
+                completed,
+                "automatic LOAD and RUN did not complete for {mode:?}"
+            );
+            assert!(core.program_matches(&program, display_file));
+
+            core.run_cycles(CPU_HZ * 3).unwrap();
+            for key in [(6, 2), (6, 0)] {
+                core.set_key(key.0, key.1, true).unwrap();
+                core.run_cycles(CPU_HZ / 5).unwrap();
+                core.set_key(key.0, key.1, false).unwrap();
+                core.run_cycles(CPU_HZ / 5).unwrap();
+            }
+            core.run_cycles(CPU_HZ).unwrap();
+            let memory = &core.machine.as_ref().unwrap().memory;
+            let display = u16::from_le_bytes([memory.read8(0x400c), memory.read8(0x400d)]);
+            let screen: Vec<u8> = (0..0x100)
+                .map(|offset| memory.read8(display + offset))
+                .collect();
+            assert!(
+                screen
+                    .windows(8)
+                    .any(|line| line == [0x1d, 0x1c, 0x00, 0x35, 0x37, 0x2e, 0x33, 0x39]),
+                "LIST did not display line 10 PRINT for {mode:?}: {screen:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bundled_rom_autoloads_the_one_k_chess_tape() {
+        let mut core = EmulatorCore::new();
+        core.set_ram_size(RamSize::OneK);
+        core.load_rom_bytes(include_bytes!("../rom/zx81.rom"))
+            .unwrap();
+        let bytes = include_bytes!("../Games Library/1KZXChess.1.ChessQueen.p").to_vec();
+        let mut loader = crate::autoload::AutoLoad::from_bytes(&mut core, bytes).unwrap();
+        for _ in 0..5000 {
+            let cycles = if loader.is_playing() {
+                core.run_cycles_until_tape_stops(CPU_HZ / 10).unwrap()
+            } else {
+                core.run_cycles(CPU_HZ / 60).unwrap()
+            };
+            if loader.advance(&mut core, cycles).unwrap() {
+                return;
+            }
+        }
+        panic!("1K chess tape did not finish loading");
+    }
+
+    #[test]
+    fn instant_load_uses_rom_for_one_k_and_sixteen_k_programs() {
+        use crate::autoload::{AutoLoad, LoadMode};
+
+        for (ram, program) in [
+            (
+                RamSize::OneK,
+                include_bytes!("../Games Library/1KZXChess.1.ChessQueen.p").as_slice(),
+            ),
+            (
+                RamSize::SixteenK,
+                include_bytes!("../Games Library/3D MONSTER MAZE.p").as_slice(),
+            ),
+        ] {
+            let mut core = EmulatorCore::new();
+            core.set_ram_size(ram);
+            core.load_rom_bytes(include_bytes!("../rom/zx81.rom"))
+                .unwrap();
+            let mut loader =
+                AutoLoad::from_bytes_with_mode(&mut core, program.to_vec(), LoadMode::Instant)
+                    .unwrap();
+            let display_file = u16::from_le_bytes([program[3], program[4]]);
+            let mut complete = false;
+            let mut tape_cycles = 0u64;
+            for _ in 0..2000 {
+                let cycles = if loader.is_playing() {
+                    core.run_cycles_until_tape_stops(CPU_HZ / 60).unwrap()
+                } else {
+                    core.run_cycles(CPU_HZ / 60).unwrap()
+                };
+                if loader.is_playing() {
+                    tape_cycles += u64::from(cycles);
+                }
+                if loader.advance(&mut core, cycles).unwrap_or_else(|error| {
+                    let machine = core.machine.as_ref().unwrap();
+                    let mismatch = (0x407d..display_file).find(|&address| {
+                        machine.memory.read8(address) != program[usize::from(address) - 0x4009]
+                    });
+                    panic!(
+                        "{ram:?}: {error}, pc={:04x}, mismatch={mismatch:?}, tape={:?}",
+                        machine.cpu.pc,
+                        core.tape_state()
+                    )
+                }) {
+                    complete = true;
+                    break;
+                }
+            }
+            assert!(complete, "instant load did not complete for {ram:?}");
+            assert!(tape_cycles < u64::from(CPU_HZ), "tape was not skipped");
+            assert!(core.program_matches(program, display_file));
+            if ram == RamSize::SixteenK {
+                assert!(!core.basic_cursor_visible(), "self-start did not run");
+            }
+        }
+    }
+
+    #[test]
+    fn instant_load_rejects_an_unsupported_rom_before_reset() {
+        use crate::autoload::{AutoLoad, LoadMode};
+
+        let mut core = EmulatorCore::new();
+        core.load_rom_bytes(&[0; crate::memory::ROM_SIZE]).unwrap();
+        core.run_cycles(1000).unwrap();
+        let before = core.cpu_snapshot().unwrap().cycles;
+        let program = include_bytes!("../Games Library/1KZXChess.1.ChessQueen.p").to_vec();
+        assert_eq!(
+            AutoLoad::from_bytes_with_mode(&mut core, program, LoadMode::Instant)
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(core.cpu_snapshot().unwrap().cycles, before);
     }
 
     #[test]

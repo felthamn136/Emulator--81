@@ -40,7 +40,8 @@ cargo run --release -- --rom /path/to/zx81.rom
 ```
 
 The application targets Windows, Linux, and macOS. Linux builds need the
-X11/XCB development libraries used by the display information crate. On Linux,
+X11/XCB development libraries used by the display information crate and ALSA
+development libraries (`libasound2-dev`). On Linux,
 file dialogs use the XDG desktop portal, with Zenity as a fallback. A working
 graphical session is required.
 
@@ -60,7 +61,7 @@ chmod +x dist/Emulator-81-x86_64.AppImage
 ```
 
 The AppImage requires a graphical session, compatible system graphics and
-X11/XCB or Wayland libraries, and glibc 2.39 or newer. FUSE is normally
+X11/XCB or Wayland libraries, ALSA, and glibc 2.39 or newer. FUSE is normally
 required; if unavailable, pass `--appimage-extract-and-run` before other
 arguments.
 
@@ -103,7 +104,9 @@ folders alongside the executable.
 To rebuild the AppImage, WiX installer and Windows portable ZIP from the project
 directory, run `sh packaging/build-release.sh`. It requires `appimagetool`,
 `zip`, WiX 5, the `x86_64-pc-windows-gnu` Rust target, and a MinGW-w64
-cross-compiler. WiX requires Windows; on Linux, `WIX` can point to a wrapper
+cross-compiler and resource compiler (`x86_64-w64-mingw32-windres`). Windows
+MSVC builds require `rc.exe` from the Windows SDK. WiX requires Windows; on
+Linux, `WIX` can point to a wrapper
 that runs WiX under Wine and translates the path arguments to Windows paths.
 Wine is not an officially supported WiX host.
 
@@ -115,7 +118,7 @@ Flatpak, Snap, `apt-get`, `dpkg-deb`, `mksquashfs`, and the Flatpak
 sh packaging/build-linux-bundles.sh /path/to/a/new/build-directory
 ```
 
-The script downloads the Ubuntu `libxi6` and `xkb-data` packages for the Snap,
+The script downloads the Ubuntu X11, keyboard data and ALSA packages for the Snap,
 leaves intermediate files in that build directory, and writes the bundles to
 `dist/`. Both release scripts respect `CARGO_TARGET_DIR` if it is set.
 No macOS installer is currently provided; a macOS build requires an Apple
@@ -145,11 +148,13 @@ requests.
 
 The top menu bar provides:
 
-- **File**: open or save a `.P` program, browse the games library, or save a
+- **File**: open a `.P` program normally or instantly, save a program, browse the games library, or save a
   PNG screenshot of the CRT (including its visual effects, but not UI overlays).
-- **Settings**: open the settings panel, toggle fullscreen, or toggle CRT
-  effects; CRT and fullscreen-confirmation toggles show ON or OFF.
-- **Machine**: pause or resume, single-step, reset, or power cycle.
+- **Settings**: open the settings panel, toggle fullscreen, tape loading sound or CRT effects, and
+  adjust **SCANLINE STRENGTH** from 0% to 100% with Left/Right in the panel.
+  CRT and fullscreen-confirmation toggles show ON or OFF.
+- **Machine**: pause or resume, single-step, reset, power cycle, or select 1K
+  or 16K RAM. Changing the RAM size resets the machine.
 - **View**: toggle fullscreen, the virtual keyboard, status, or the debug overlay.
 - **Help**: open the About window.
 
@@ -201,21 +206,35 @@ These settings are code defaults, not a persistent configuration file.
 With a ROM loaded, choose **File > Open File** or drop a `.P` file onto the
 window to load and run it. The file dialog requests the home folder when it
 can be determined; the Linux Zenity fallback may use its own starting folder.
-Choose **File > Browse Emulator Games Library** to open the file picker at the
-`Games Library` directory and select a game, including one in a subfolder.
+Choose **File > Games Library (Standard Load)** or **Games Library (Instant
+Load)** to open the file picker at the `Games Library` directory and select a
+game, including one in a subfolder.
 The library is found in the working directory, the `ZX81_Emulator` subfolder
 of the working directory, beside the executable, or in the project directory.
 The folder must exist; a missing or inaccessible library is reported. Some
 desktop file-picker implementations may override the requested starting folder.
+The machine pauses while a file dialog is open, but the window remains responsive.
 The emulator resets first, so the current program and machine state are lost.
 The ROM boots, receives `LOAD ""`, and reads the synthesized tape signal.
+Files whose saved data exceeds the selected RAM size are rejected before reset;
+choose 16K RAM for programs that do not fit in 1K.
 Programs with a saved self-start line can continue automatically; otherwise,
 the emulator dismisses the ROM's successful load report when necessary and
-enters `RUN` at the BASIC prompt. Tape input is
-accelerated while loading, though larger programs
-can still take time. Black-and-white zigzag bands follow the emulated tape
+enters `RUN` at the BASIC prompt. Tape input is accelerated at a frame-bounded
+rate to keep the application responsive, though larger programs can still take
+time. Black-and-white zigzag bands follow the emulated tape
 signal during playback, approximating the ZX81 loading display; they are not
 beam-accurate.
+For a faster alternative, choose **File > Open File Instantly**. This still
+uses the ROM's load and run logic, but skips the tape pulse timing and
+fast-forwards the startup. Instant loading requires a compatible ROM; an
+unsupported ROM is reported before the machine is reset.
+
+**Settings > Tape loading sound** enables the optional emulated tape signal
+through the default audio output. It is off by default. When enabled, standard
+loading runs at tape speed so the sound matches playback; instant loads remain
+silent. If audio cannot be initialized or fails, the emulator reports the
+error and continues without sound.
 F8 pauses and resumes the process; F10 cancels it by resetting the machine.
 Invalid files and loading failures are reported.
 Without a ROM, dropping a program displays an error instead of simulating a
@@ -247,7 +266,8 @@ Its modifications add M1 opcode-fetch and refresh interrupt callbacks,
 register access for debugging, explicit interrupt servicing, and corrections
 to EI/NMI handling and interrupt-mode-0 timing. Its license
 is in `vendor/z80/LICENSE`. `Memory` models
-the 8K ROM and 16K RAM pack with their normal mirrors and ROM write protection.
+the 8K ROM and selectable 1K or 16K RAM, with their normal mirrors and ROM
+write protection.
 `EmulatorCore::load_rom` or `load_rom_bytes` validates an externally supplied
 8192-byte ROM; `step_instruction` executes one CPU instruction and returns its
 T-state count. In ROM mode, host alphanumeric keys, both Shift keys, Enter,
@@ -356,8 +376,8 @@ Assets are looked up in `ZX81_ASSETS_DIR` if set, otherwise in an `assets`
 directory in the working directory, beside the executable, or in this Cargo
 project directory. Set `ZX81_ASSETS_DIR` to an empty directory to try the
 procedural fallback. Missing or invalid image assets are reported on stderr;
-the application still draws an operable fallback. The emulator produces no
-sound; tape loading uses an emulated input signal rather than audio playback.
+the application still draws an operable fallback. Apart from the optional tape
+loading sound, the emulator does not currently emulate sound.
 
 Run unit tests with `cargo test` and static checks with
 `cargo clippy --all-targets -- -D warnings`.

@@ -5,10 +5,27 @@ use z80::Z80_io;
 pub const ROM_SIZE: usize = 0x2000;
 pub const RAM_SIZE: usize = 0x4000;
 
-/// 8K ROM and a 16K RAM pack, including their standard address mirrors.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RamSize {
+    OneK,
+    #[default]
+    SixteenK,
+}
+
+impl RamSize {
+    pub(crate) const fn bytes(self) -> usize {
+        match self {
+            Self::OneK => 0x0400,
+            Self::SixteenK => RAM_SIZE,
+        }
+    }
+}
+
+/// 8K ROM and a selectable 1K or 16K RAM pack, including their address mirrors.
 pub struct Memory {
     rom: Box<[u8; ROM_SIZE]>,
     ram: Box<[u8; RAM_SIZE]>,
+    ram_size: RamSize,
     keyboard: [u8; 8],
     nmi_enabled: bool,
     tape_input: bool,
@@ -17,6 +34,10 @@ pub struct Memory {
 
 impl Memory {
     pub fn new(rom: &[u8]) -> io::Result<Self> {
+        Self::with_ram_size(rom, RamSize::default())
+    }
+
+    pub fn with_ram_size(rom: &[u8], ram_size: RamSize) -> io::Result<Self> {
         let rom: [u8; ROM_SIZE] = rom.try_into().map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -26,6 +47,7 @@ impl Memory {
         Ok(Self {
             rom: Box::new(rom),
             ram: Box::new([0; RAM_SIZE]),
+            ram_size,
             keyboard: [0x1f; 8],
             nmi_enabled: false,
             tape_input: false,
@@ -38,14 +60,22 @@ impl Memory {
         if address < 0x4000 {
             self.rom[usize::from(address & 0x1fff)]
         } else {
-            self.ram[usize::from(address - 0x4000)]
+            self.ram[usize::from(address - 0x4000) & (self.ram_size.bytes() - 1)]
         }
     }
 
     pub fn write8(&mut self, address: u16, value: u8) {
         let address = address & 0x7fff;
         if address >= 0x4000 {
-            self.ram[usize::from(address - 0x4000)] = value;
+            let index = usize::from(address - 0x4000) & (self.ram_size.bytes() - 1);
+            self.ram[index] = value;
+        }
+    }
+
+    pub fn set_ram_size(&mut self, ram_size: RamSize) {
+        if self.ram_size != ram_size {
+            self.ram_size = ram_size;
+            self.clear_ram();
         }
     }
 
@@ -171,6 +201,31 @@ mod tests {
         memory.clear_ram();
         assert_eq!(memory.read8(0x4000), 0);
         assert_eq!(memory.read8(0xffff), 0);
+    }
+
+    #[test]
+    fn one_k_ram_is_mirrored_through_the_ram_address_space() {
+        let mut memory = Memory::with_ram_size(&[0; ROM_SIZE], RamSize::OneK).unwrap();
+        memory.write8(0x43ff, 0x12);
+        assert_eq!(memory.read8(0x47ff), 0x12);
+        assert_eq!(memory.read8(0x7fff), 0x12);
+
+        memory.write8(0x4400, 0x34);
+        assert_eq!(memory.read8(0x4000), 0x34);
+        assert_eq!(memory.read8(0xc000), 0x34);
+    }
+
+    #[test]
+    fn changing_ram_size_clears_ram_and_changes_the_mirror() {
+        let mut memory = Memory::new(&[0; ROM_SIZE]).unwrap();
+        memory.write8(0x4400, 0x12);
+        memory.set_ram_size(RamSize::OneK);
+        assert_eq!(memory.read8(0x4400), 0);
+
+        memory.write8(0x43ff, 0x34);
+        assert_eq!(memory.read8(0x47ff), 0x34);
+        memory.set_ram_size(RamSize::SixteenK);
+        assert_eq!(memory.read8(0x43ff), 0);
     }
 
     #[test]

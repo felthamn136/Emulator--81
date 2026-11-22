@@ -1,6 +1,6 @@
 use macroquad::prelude::*;
 
-use crate::{app::AppState, experience::Experience};
+use crate::{app::AppState, autoload::LoadMode, experience::Experience, memory::RamSize};
 
 pub const BAR_HEIGHT: f32 = 36.0;
 const ROW_HEIGHT: f32 = 30.0;
@@ -16,7 +16,9 @@ const TABS: [(&str, f32); 5] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Open,
-    BrowseGamesLibrary,
+    OpenInstant,
+    TapeSound,
+    BrowseGamesLibrary(LoadMode),
     Save,
     Screenshot,
     Settings,
@@ -30,31 +32,43 @@ pub enum Action {
     Status,
     Debug,
     About,
+    RamSize(RamSize),
 }
 
 const FILE: &[(&str, Action)] = &[
     ("Open File", Action::Open),
-    ("Browse Emulator Games Library", Action::BrowseGamesLibrary),
+    ("Open File Instantly", Action::OpenInstant),
+    (
+        "Games Library (Standard Load)",
+        Action::BrowseGamesLibrary(LoadMode::Standard),
+    ),
+    (
+        "Games Library (Instant Load)",
+        Action::BrowseGamesLibrary(LoadMode::Instant),
+    ),
     ("Save File", Action::Save),
     ("Save CRT Screenshot", Action::Screenshot),
 ];
 const SETTINGS: &[(&str, Action)] = &[
     ("Settings panel", Action::Settings),
     ("Fullscreen", Action::Fullscreen),
-    ("Fullscreen confirmation", Action::Setting(7)),
+    ("Fullscreen confirmation", Action::Setting(8)),
     ("CRT warm-up", Action::Setting(0)),
     ("Scanlines", Action::Setting(1)),
-    ("Reflections", Action::Setting(2)),
-    ("Curvature", Action::Setting(3)),
-    ("Bloom", Action::Setting(4)),
-    ("Phosphor glow", Action::Setting(5)),
-    ("Flicker", Action::Setting(6)),
+    ("Reflections", Action::Setting(3)),
+    ("Curvature", Action::Setting(4)),
+    ("Bloom", Action::Setting(5)),
+    ("Phosphor glow", Action::Setting(6)),
+    ("Flicker", Action::Setting(7)),
+    ("Tape loading sound", Action::TapeSound),
 ];
 const MACHINE: &[(&str, Action)] = &[
     ("Pause / Resume", Action::Pause),
     ("Single step", Action::Step),
     ("Reset", Action::Reset),
     ("Power cycle", Action::PowerCycle),
+    ("1K RAM", Action::RamSize(RamSize::OneK)),
+    ("16K RAM", Action::RamSize(RamSize::SixteenK)),
 ];
 const VIEW: &[(&str, Action)] = &[
     ("Fullscreen", Action::Fullscreen),
@@ -94,9 +108,9 @@ fn shortcut(action: Action) -> Option<&'static str> {
     match action {
         Action::Settings => Some("F1"),
         Action::Setting(1) => Some("F2"),
-        Action::Setting(2) => Some("F3"),
-        Action::Setting(3) => Some("F4"),
-        Action::Setting(6) => Some("F6"),
+        Action::Setting(3) => Some("F3"),
+        Action::Setting(4) => Some("F4"),
+        Action::Setting(7) => Some("F6"),
         Action::Status => Some("F7"),
         Action::Pause => Some("F8"),
         Action::Step => Some("F9"),
@@ -194,20 +208,22 @@ impl Menu {
                 let checked = match action {
                     Action::Setting(0) => experience.settings.enabled,
                     Action::Setting(1) => state.scanlines_enabled,
-                    Action::Setting(2) => state.crt_reflections_enabled,
-                    Action::Setting(3) => state.crt_curvature_enabled,
-                    Action::Setting(4) => state.bloom_enabled,
-                    Action::Setting(5) => state.glow_enabled,
-                    Action::Setting(6) => state.flicker_enabled,
-                    Action::Setting(7) => state.fullscreen_confirmation,
+                    Action::Setting(3) => state.crt_reflections_enabled,
+                    Action::Setting(4) => state.crt_curvature_enabled,
+                    Action::Setting(5) => state.bloom_enabled,
+                    Action::Setting(6) => state.glow_enabled,
+                    Action::Setting(7) => state.flicker_enabled,
+                    Action::Setting(8) => state.fullscreen_confirmation,
+                    Action::TapeSound => state.tape_sound,
                     Action::Pause => paused,
                     Action::Fullscreen => state.fullscreen,
                     Action::VirtualKeyboard => state.show_virtual_keyboard,
                     Action::Status => state.show_status,
                     Action::Debug => state.show_debug,
+                    Action::RamSize(ram_size) => state.ram_size == ram_size,
                     _ => false,
                 };
-                let is_setting = matches!(action, Action::Setting(_));
+                let is_setting = matches!(action, Action::Setting(_) | Action::TapeSound);
                 if is_setting {
                     let value = if checked { "ON" } else { "OFF" };
                     draw_text(
@@ -266,7 +282,17 @@ mod tests {
         menu.click(vec2(10.0, 10.0), 800.0);
         assert_eq!(
             menu.click(vec2(30.0, BAR_HEIGHT + ROW_HEIGHT + 5.0), 800.0),
-            (true, Some(Action::BrowseGamesLibrary))
+            (true, Some(Action::OpenInstant))
+        );
+        menu.click(vec2(10.0, 10.0), 800.0);
+        assert_eq!(
+            menu.click(vec2(30.0, BAR_HEIGHT + ROW_HEIGHT * 2.0 + 5.0), 800.0),
+            (true, Some(Action::BrowseGamesLibrary(LoadMode::Standard)))
+        );
+        menu.click(vec2(10.0, 10.0), 800.0);
+        assert_eq!(
+            menu.click(vec2(30.0, BAR_HEIGHT + ROW_HEIGHT * 3.0 + 5.0), 800.0),
+            (true, Some(Action::BrowseGamesLibrary(LoadMode::Instant)))
         );
         assert!(!menu.is_open());
         menu.click(vec2(90.0, 10.0), 800.0);
@@ -279,7 +305,7 @@ mod tests {
         assert!(!menu.is_open());
         menu.click(vec2(10.0, 10.0), 800.0);
         assert_eq!(
-            menu.click(vec2(30.0, BAR_HEIGHT + ROW_HEIGHT * 3.0 + 5.0), 800.0),
+            menu.click(vec2(30.0, BAR_HEIGHT + ROW_HEIGHT * 5.0 + 5.0), 800.0),
             (true, Some(Action::Screenshot))
         );
     }
@@ -302,13 +328,46 @@ mod tests {
     }
 
     #[test]
+    fn machine_menu_selects_ram_size() {
+        let mut menu = Menu::default();
+        assert_eq!(menu.click(vec2(200.0, 10.0), 800.0), (true, None));
+        let dropdown = dropdown_rect(menu.open.unwrap(), 800.0);
+        assert_eq!(
+            menu.click(
+                vec2(dropdown.x + 10.0, BAR_HEIGHT + ROW_HEIGHT * 4.0 + 5.0),
+                800.0
+            ),
+            (true, Some(Action::RamSize(RamSize::OneK)))
+        );
+        assert_eq!(menu.click(vec2(200.0, 10.0), 800.0), (true, None));
+        let dropdown = dropdown_rect(menu.open.unwrap(), 800.0);
+        assert_eq!(
+            menu.click(
+                vec2(dropdown.x + 10.0, BAR_HEIGHT + ROW_HEIGHT * 5.0 + 5.0),
+                800.0
+            ),
+            (true, Some(Action::RamSize(RamSize::SixteenK)))
+        );
+    }
+
+    #[test]
+    fn fullscreen_confirmation_uses_its_current_settings_index() {
+        let mut menu = Menu::default();
+        assert_eq!(menu.click(vec2(90.0, 10.0), 800.0), (true, None));
+        assert_eq!(
+            menu.click(vec2(100.0, BAR_HEIGHT + ROW_HEIGHT * 2.0 + 5.0), 800.0),
+            (true, Some(Action::Setting(8)))
+        );
+    }
+
+    #[test]
     fn shortcut_labels_follow_menu_actions() {
         for (action, expected) in [
             (Action::Settings, "F1"),
             (Action::Setting(1), "F2"),
-            (Action::Setting(2), "F3"),
-            (Action::Setting(3), "F4"),
-            (Action::Setting(6), "F6"),
+            (Action::Setting(3), "F3"),
+            (Action::Setting(4), "F4"),
+            (Action::Setting(7), "F6"),
             (Action::Status, "F7"),
             (Action::Pause, "F8"),
             (Action::Step, "F9"),

@@ -12,7 +12,8 @@ pub enum SettingsAction {
     PowerCycle,
 }
 
-const SETTINGS_COUNT: usize = 10;
+const SETTINGS_COUNT: usize = 11;
+const SCANLINE_STRENGTH_SETTING: usize = 2;
 
 pub fn settings_input(state: &mut AppState, experience: &mut Experience) -> SettingsAction {
     if is_key_pressed(KeyCode::Up) {
@@ -28,7 +29,17 @@ pub fn settings_input(state: &mut AppState, experience: &mut Experience) -> Sett
     {
         return SettingsAction::None;
     }
+    if state.settings_selection == SCANLINE_STRENGTH_SETTING {
+        adjust_scanline_strength(state, !is_key_pressed(KeyCode::Left));
+        return SettingsAction::None;
+    }
     activate_setting(state.settings_selection, state, experience)
+}
+
+fn adjust_scanline_strength(state: &mut AppState, increase: bool) {
+    let current = (state.scanline_strength.clamp(0.0, 1.0) * 10.0).round() as i32;
+    let step = if increase { 1 } else { -1 };
+    state.scanline_strength = (current + step).clamp(0, 10) as f32 / 10.0;
 }
 
 pub fn activate_setting(
@@ -44,14 +55,14 @@ pub fn activate_setting(
             }
         }
         1 => state.scanlines_enabled = !state.scanlines_enabled,
-        2 => state.crt_reflections_enabled = !state.crt_reflections_enabled,
-        3 => state.crt_curvature_enabled = !state.crt_curvature_enabled,
-        4 => state.bloom_enabled = !state.bloom_enabled,
-        5 => state.glow_enabled = !state.glow_enabled,
-        6 => state.flicker_enabled = !state.flicker_enabled,
-        7 => state.fullscreen_confirmation = !state.fullscreen_confirmation,
-        8 => return SettingsAction::Reset,
-        9 => return SettingsAction::PowerCycle,
+        3 => state.crt_reflections_enabled = !state.crt_reflections_enabled,
+        4 => state.crt_curvature_enabled = !state.crt_curvature_enabled,
+        5 => state.bloom_enabled = !state.bloom_enabled,
+        6 => state.glow_enabled = !state.glow_enabled,
+        7 => state.flicker_enabled = !state.flicker_enabled,
+        8 => state.fullscreen_confirmation = !state.fullscreen_confirmation,
+        9 => return SettingsAction::Reset,
+        10 => return SettingsAction::PowerCycle,
         _ => {}
     }
     SettingsAction::None
@@ -83,6 +94,7 @@ pub fn draw_settings(scaling: &Scaling, state: &AppState, experience: &Experienc
         ("DISPLAY", None),
         ("CRT WARM-UP", Some(experience.settings.enabled)),
         ("SCANLINES", Some(state.scanlines_enabled)),
+        ("SCANLINE STRENGTH", None),
         ("REFLECTIONS", Some(state.crt_reflections_enabled)),
         ("CURVATURE", Some(state.crt_curvature_enabled)),
         ("BLOOM", Some(state.bloom_enabled)),
@@ -116,6 +128,14 @@ pub fn draw_settings(scaling: &Scaling, state: &AppState, experience: &Experienc
                 font,
                 color,
             );
+        } else if row == "SCANLINE STRENGTH" {
+            draw_text(
+                &format!("{:.0}%", state.scanline_strength * 100.0),
+                panel.x + panel.w - 120.0 * scaling.scale,
+                y,
+                font,
+                color,
+            );
         }
         if !heading {
             selection += 1;
@@ -123,12 +143,52 @@ pub fn draw_settings(scaling: &Scaling, state: &AppState, experience: &Experienc
         y += 40.0 * scaling.scale;
     }
     draw_text(
-        "UP/DOWN SELECT   ENTER CHANGE   ESC CLOSE",
+        "UP/DOWN SELECT   ENTER CHANGE   LEFT/RIGHT ADJUST   ESC CLOSE",
         x,
         panel.y + panel.h - 28.0 * scaling.scale,
         font * 0.7,
         LIGHTGRAY,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scanline_strength_adjustment_stays_within_zero_to_one() {
+        let mut state = AppState::default();
+        for _ in 0..12 {
+            adjust_scanline_strength(&mut state, false);
+        }
+        assert_eq!(state.scanline_strength, 0.0);
+
+        for _ in 0..12 {
+            adjust_scanline_strength(&mut state, true);
+        }
+        assert_eq!(state.scanline_strength, 1.0);
+    }
+
+    #[test]
+    fn settings_indices_match_the_displayed_rows() {
+        let mut state = AppState::default();
+        let mut experience = Experience::default();
+
+        activate_setting(3, &mut state, &mut experience);
+        activate_setting(4, &mut state, &mut experience);
+        activate_setting(8, &mut state, &mut experience);
+        assert!(!state.crt_reflections_enabled);
+        assert!(state.crt_curvature_enabled);
+        assert!(!state.fullscreen_confirmation);
+        assert!(matches!(
+            activate_setting(9, &mut state, &mut experience),
+            SettingsAction::Reset
+        ));
+        assert!(matches!(
+            activate_setting(10, &mut state, &mut experience),
+            SettingsAction::PowerCycle
+        ));
+    }
 }
 
 pub fn draw_fullscreen_confirmation(target_fullscreen: bool, selection: usize) {

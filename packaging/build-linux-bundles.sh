@@ -41,24 +41,27 @@ cp "packaging/$app_id.desktop" "$flatpak_build/files/share/applications/"
 cp packaging/emulator-81-icon.png \
   "$flatpak_build/files/share/icons/hicolor/512x512/apps/$app_id.png"
 flatpak build-finish --command=zx81_emulator --share=ipc \
-  --socket=fallback-x11 --socket=wayland --device=dri "$flatpak_build"
+  --socket=fallback-x11 --socket=wayland --socket=pulseaudio --device=dri "$flatpak_build"
 flatpak build-export "$work/flatpak-repo" "$flatpak_build" stable
 flatpak build-bundle --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
   "$work/flatpak-repo" "$work/Emulator-81-x86_64.flatpak" "$app_id" stable
 
 snap_stage="$work/snap-stage"
-mkdir -p "$snap_stage/meta/gui" "$snap_stage/bin" "$snap_stage/usr/bin" \
+mkdir -p "$snap_stage/meta/gui" "$snap_stage/bin" "$snap_stage/usr/bin" "$snap_stage/etc" \
   "$snap_stage/gpu-2604" "$work/snap-debs"
 cp packaging/snap/snap.yaml "$snap_stage/meta/snap.yaml"
 cp packaging/snap/emulator-81.desktop "$snap_stage/meta/gui/"
 cp packaging/emulator-81-icon.png "$snap_stage/meta/gui/emulator-81.png"
 cp packaging/snap/emulator-81 "$snap_stage/bin/"
+cp packaging/snap/alsa.conf "$snap_stage/etc/"
 chmod +x "$snap_stage/bin/emulator-81"
 cp "$binary" "$snap_stage/usr/bin/"
 cp -R assets rom "Games Library" "$snap_stage/usr/bin/"
 (
   cd "$work/snap-debs"
-  apt-get download libxi6 xkb-data
+  apt-get download libxi6 xkb-data libasound2t64 libasound2-data libasound2-plugins \
+    libpulse0 libsndfile1 libflac14 libvorbis0a libvorbisenc2 libopus0 libogg0 \
+    libmpg123-0t64 libmp3lame0 libasyncns0 libx11-xcb1
   for package in ./*.deb; do
     dpkg-deb -x "$package" "$snap_stage"
   done

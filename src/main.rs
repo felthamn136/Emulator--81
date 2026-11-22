@@ -12,6 +12,7 @@ pub mod memory;
 mod menu;
 mod scaling;
 mod tape;
+mod tape_audio;
 mod ui;
 pub mod video;
 pub mod viewport;

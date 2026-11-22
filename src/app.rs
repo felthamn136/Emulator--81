@@ -1,19 +1,27 @@
 use image::ImageEncoder;
 use macroquad::prelude::*;
-use std::io::Write;
+use std::{
+    future::Future,
+    io::Write,
+    path::PathBuf,
+    pin::Pin,
+    task::{Context, Poll, Waker},
+};
 
 use crate::{
     about::About,
     assets::{AssetManager, TvAssets},
-    autoload::AutoLoad,
+    autoload::{AutoLoad, LoadMode},
     bezel,
     config::{RenderLayer, INITIAL_WINDOW_HEIGHT, INITIAL_WINDOW_WIDTH, RENDER_ORDER},
     crt::{self, Crt},
     debug,
     emulator::{EmulatorCore, CPU_HZ},
     experience::{Experience, ScreenState},
+    memory::RamSize,
     menu::{self, Action, Menu},
     scaling::Scaling,
+    tape_audio::TapeAudio,
     ui::{self, SettingsAction},
     viewport,
     virtual_keyboard::{Event as KeyboardEvent, KeyboardWindow},
@@ -76,12 +84,15 @@ pub struct AppState {
     pub settings_selection: usize,
     pub show_status: bool,
     pub scanlines_enabled: bool,
+    pub scanline_strength: f32,
     pub crt_reflections_enabled: bool,
     pub crt_curvature_enabled: bool,
     pub bloom_enabled: bool,
     pub glow_enabled: bool,
     pub flicker_enabled: bool,
     pub program_loading: bool,
+    pub tape_sound: bool,
+    pub ram_size: RamSize,
 }
 
 impl Default for AppState {
@@ -96,12 +107,15 @@ impl Default for AppState {
             settings_selection: 0,
             show_status: false,
             scanlines_enabled: true,
+            scanline_strength: 1.0,
             crt_reflections_enabled: true,
             crt_curvature_enabled: false,
             bloom_enabled: true,
             glow_enabled: true,
             flicker_enabled: true,
             program_loading: false,
+            tape_sound: false,
+            ram_size: RamSize::default(),
         }
     }
 }
@@ -122,11 +136,12 @@ pub async fn run() {
         emulator: EmulatorCore::new(),
         menu: Menu::default(),
         autoload: None,
+        tape_audio: None,
         notification: None,
         paused: false,
         cycle_credit: 0.0,
         display_error_reported: false,
-        discard_frame_time: false,
+        file_dialog: None,
         pending_fullscreen: None,
         confirmation_selection: 0,
         keyboard_window: None,
@@ -182,6 +197,32 @@ fn accrue_cycles(credit: &mut f64, delta: f32) -> u32 {
     credit.floor().clamp(0.0, f64::from(CPU_HZ / 10)) as u32
 }
 
+fn autoload_cycle_budget(budget: u32) -> u32 {
+    budget.clamp(CPU_HZ / 20, CPU_HZ / 10)
+}
+
+enum DialogAction {
+    Open(LoadMode),
+    SaveProgram(Vec<u8>),
+    SaveScreenshot(image::RgbaImage),
+}
+
+struct PendingFileDialog {
+    future: Pin<Box<dyn Future<Output = Option<rfd::FileHandle>>>>,
+    action: DialogAction,
+}
+
+impl PendingFileDialog {
+    fn poll(&mut self) -> Poll<Option<PathBuf>> {
+        // The frame loop polls again regardless of wakeups.
+        let mut context = Context::from_waker(Waker::noop());
+        self.future
+            .as_mut()
+            .poll(&mut context)
+            .map(|file| file.map(|file| file.path().to_path_buf()))
+    }
+}
+
 struct App {
     bezel: TvAssets,
     background: Option<Texture2D>,
@@ -192,11 +233,12 @@ struct App {
     emulator: EmulatorCore,
     menu: Menu,
     autoload: Option<AutoLoad>,
+    tape_audio: Option<TapeAudio>,
     notification: Option<(String, f32)>,
     paused: bool,
     cycle_credit: f64,
     display_error_reported: bool,
-    discard_frame_time: bool,
+    file_dialog: Option<PendingFileDialog>,
     pending_fullscreen: Option<bool>,
     confirmation_selection: usize,
     keyboard_window: Option<KeyboardWindow>,
@@ -293,6 +335,7 @@ impl App {
     }
 
     fn power_cycle(&mut self) {
+        self.clear_tape_audio();
         self.experience.start_shutdown(true);
         self.state.program_loading = false;
         self.autoload = None;
@@ -302,6 +345,7 @@ impl App {
     }
 
     fn reset(&mut self) {
+        self.clear_tape_audio();
         self.emulator.reset();
         self.cycle_credit = 0.0;
         self.display_error_reported = false;
@@ -310,7 +354,7 @@ impl App {
         self.autoload = None;
     }
 
-    fn open_program(&mut self, path: &std::path::Path) {
+    fn open_program(&mut self, path: &std::path::Path, mode: LoadMode) {
         if !self.emulator.is_loaded() {
             self.notify("A ZX81 ROM is required to run .P files; start with --rom.");
         } else if self.autoload.is_some() {
@@ -323,8 +367,9 @@ impl App {
         ) {
             self.notify("Wait until the television is on before loading a program.");
         } else {
-            match AutoLoad::from_path(&mut self.emulator, path) {
+            match AutoLoad::from_path_with_mode(&mut self.emulator, path, mode) {
                 Ok(loader) => {
+                    self.clear_tape_audio();
                     self.autoload = Some(loader);
                     self.cycle_credit = 0.0;
                     self.display_error_reported = false;
@@ -335,9 +380,8 @@ impl App {
         }
     }
 
-    fn file_dialog(&mut self) -> rfd::FileDialog {
-        self.discard_frame_time = true;
-        let dialog = rfd::FileDialog::new().add_filter("ZX81 program", &["p", "P"]);
+    fn file_dialog() -> rfd::AsyncFileDialog {
+        let dialog = rfd::AsyncFileDialog::new().add_filter("ZX81 program", &["p", "P"]);
         if let Some(home) = dirs::home_dir() {
             dialog.set_directory(home)
         } else {
@@ -346,7 +390,7 @@ impl App {
         }
     }
 
-    fn browse_games_library(&mut self) {
+    fn browse_games_library(&mut self, mode: LoadMode) {
         let directory = match games_library_dir() {
             Ok(directory) => directory,
             Err(error) => {
@@ -354,7 +398,7 @@ impl App {
                 return;
             }
         };
-        let dialog = rfd::FileDialog::new()
+        let dialog = rfd::AsyncFileDialog::new()
             .set_title("Browse Emulator Games Library")
             .add_filter("ZX81 program", &["p", "P"])
             .set_directory(&directory);
@@ -366,10 +410,10 @@ impl App {
                 return;
             }
         };
-        self.discard_frame_time = true;
-        if let Some(path) = dialog.pick_file() {
-            self.open_program(&path);
-        }
+        self.file_dialog = Some(PendingFileDialog {
+            future: Box::pin(dialog.pick_file()),
+            action: DialogAction::Open(mode),
+        });
     }
 
     fn save_program(&mut self) {
@@ -384,55 +428,81 @@ impl App {
                 return;
             }
         };
-        let path = self.file_dialog().set_file_name("program.p").save_file();
-        if let Some(path) = path {
-            if !path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("p"))
-            {
-                self.notify("Cannot save program: the filename must end in .p.");
-            } else if let Err(error) = write_file_atomically(&path, &bytes) {
-                self.notify(format!("Cannot save {}: {error}", path.display()));
-            } else {
-                self.notify(format!("Saved {}.", path.display()));
+        let dialog = Self::file_dialog().set_file_name("program.p");
+        self.file_dialog = Some(PendingFileDialog {
+            future: Box::pin(dialog.save_file()),
+            action: DialogAction::SaveProgram(bytes),
+        });
+    }
+
+    fn save_screenshot(&mut self, screenshot: image::RgbaImage) {
+        let dialog = rfd::AsyncFileDialog::new()
+            .set_title("Save CRT Screenshot")
+            .add_filter("PNG image", &["png"])
+            .set_file_name("screenshot.png");
+        self.file_dialog = Some(PendingFileDialog {
+            future: Box::pin(dialog.save_file()),
+            action: DialogAction::SaveScreenshot(screenshot),
+        });
+    }
+
+    fn update_file_dialog(&mut self) {
+        let Some(dialog) = &mut self.file_dialog else {
+            return;
+        };
+        let Poll::Ready(path) = dialog.poll() else {
+            return;
+        };
+        let dialog = self.file_dialog.take().expect("file dialog is present");
+        let Some(path) = path else {
+            return;
+        };
+        match dialog.action {
+            DialogAction::Open(mode) => self.open_program(&path, mode),
+            DialogAction::SaveProgram(bytes) => {
+                if !path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("p"))
+                {
+                    self.notify("Cannot save program: the filename must end in .p.");
+                } else if let Err(error) = write_file_atomically(&path, &bytes) {
+                    self.notify(format!("Cannot save {}: {error}", path.display()));
+                } else {
+                    self.notify(format!("Saved {}.", path.display()));
+                }
+            }
+            DialogAction::SaveScreenshot(screenshot) => {
+                if !path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+                {
+                    self.notify("Cannot save screenshot: the filename must end in .png.");
+                } else if let Err(error) = write_screenshot_file(&path, &screenshot) {
+                    self.notify(format!(
+                        "Cannot save screenshot {}: {error}",
+                        path.display()
+                    ));
+                } else {
+                    self.notify(format!("Saved screenshot {}.", path.display()));
+                }
             }
         }
     }
 
-    fn save_screenshot(&mut self, screenshot: image::RgbaImage) {
-        self.discard_frame_time = true;
-        let dialog = rfd::FileDialog::new()
-            .set_title("Save CRT Screenshot")
-            .add_filter("PNG image", &["png"])
-            .set_file_name("screenshot.png");
-        let Some(path) = dialog.save_file() else {
-            return;
-        };
-        if !path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
-        {
-            self.notify("Cannot save screenshot: the filename must end in .png.");
-        } else if let Err(error) = write_screenshot_file(&path, &screenshot) {
-            self.notify(format!(
-                "Cannot save screenshot {}: {error}",
-                path.display()
-            ));
-        } else {
-            self.notify(format!("Saved screenshot {}.", path.display()));
-        }
-    }
-
     fn update(&mut self) {
-        let delta = if std::mem::take(&mut self.discard_frame_time) {
-            0.0
-        } else {
-            get_frame_time().max(0.0)
-        };
+        let delta = get_frame_time().max(0.0);
+        if let Some(error) = self.tape_audio.as_ref().and_then(TapeAudio::error) {
+            self.disable_tape_audio(error);
+        }
         if let Some(screenshot) = self.pending_screenshot.take() {
             self.save_screenshot(screenshot);
+        }
+        if self.file_dialog.is_some() {
+            self.clear_tape_audio();
+            self.update_file_dialog();
+            return;
         }
         self.update_virtual_keyboard();
         if self.about.open {
@@ -441,6 +511,7 @@ impl App {
             return;
         }
         if self.pending_fullscreen.is_some() {
+            self.clear_tape_audio();
             self.update_fullscreen_confirmation();
             self.experience.update(delta);
             self.state.program_loading = self.autoload.is_some();
@@ -450,11 +521,32 @@ impl App {
         let mut step_requested = false;
         match action {
             Some(Action::Open) => {
-                if let Some(path) = self.file_dialog().pick_file() {
-                    self.open_program(&path);
+                self.file_dialog = Some(PendingFileDialog {
+                    future: Box::pin(Self::file_dialog().pick_file()),
+                    action: DialogAction::Open(LoadMode::Standard),
+                });
+            }
+            Some(Action::OpenInstant) => {
+                self.file_dialog = Some(PendingFileDialog {
+                    future: Box::pin(Self::file_dialog().pick_file()),
+                    action: DialogAction::Open(LoadMode::Instant),
+                });
+            }
+            Some(Action::TapeSound) => {
+                if self.tape_audio.is_some() {
+                    self.tape_audio = None;
+                    self.state.tape_sound = false;
+                } else {
+                    match TapeAudio::open() {
+                        Ok(audio) => {
+                            self.tape_audio = Some(audio);
+                            self.state.tape_sound = true;
+                        }
+                        Err(error) => self.notify(format!("Cannot enable tape sound: {error}")),
+                    }
                 }
             }
-            Some(Action::BrowseGamesLibrary) => self.browse_games_library(),
+            Some(Action::BrowseGamesLibrary(mode)) => self.browse_games_library(mode),
             Some(Action::Save) => self.save_program(),
             Some(Action::Screenshot) => self.screenshot_requested = true,
             Some(Action::About) => self.about.open = true,
@@ -477,6 +569,13 @@ impl App {
             Some(Action::Step) => self.notify("Pause the emulator before single-stepping."),
             Some(Action::Reset) => self.reset(),
             Some(Action::PowerCycle) => self.power_cycle(),
+            Some(Action::RamSize(ram_size)) => {
+                if self.state.ram_size != ram_size {
+                    self.state.ram_size = ram_size;
+                    self.emulator.set_ram_size(ram_size);
+                    self.reset();
+                }
+            }
             Some(Action::Fullscreen) => {
                 self.request_fullscreen(!self.state.fullscreen);
             }
@@ -550,7 +649,7 @@ impl App {
 
         for file in get_dropped_files() {
             match file.path {
-                Some(path) => self.open_program(&path),
+                Some(path) => self.open_program(&path, LoadMode::Standard),
                 None => self.notify("Cannot load a dropped file without a filename."),
             }
         }
@@ -597,6 +696,52 @@ impl App {
                 }
             }
         }
+        if !self.paused && self.autoload.as_ref().is_some_and(AutoLoad::is_instant) {
+            let started = std::time::Instant::now();
+            loop {
+                let result = if self.autoload.as_ref().is_some_and(AutoLoad::is_playing) {
+                    self.emulator.run_cycles_until_tape_stops(CPU_HZ / 60)
+                } else {
+                    self.emulator.run_cycles(CPU_HZ / 60)
+                };
+                let result = result.and_then(|cycles| {
+                    self.autoload
+                        .as_mut()
+                        .expect("instant loader is active")
+                        .advance(&mut self.emulator, cycles)
+                });
+                match result {
+                    Ok(true) => {
+                        self.autoload = None;
+                        self.cycle_credit = 0.0;
+                        self.notify("Program loaded.");
+                        break;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        self.reset();
+                        self.notify(format!("Program load failed: {error}"));
+                        break;
+                    }
+                }
+                if started.elapsed() >= std::time::Duration::from_millis(8) {
+                    break;
+                }
+            }
+            self.refresh_emulator_display();
+            return;
+        }
+        if self.paused {
+            self.clear_tape_audio();
+        }
+        let sound_start = if !self.paused
+            && self.tape_audio.is_some()
+            && self.autoload.as_ref().is_some_and(AutoLoad::is_playing)
+        {
+            self.emulator.tape_elapsed()
+        } else {
+            None
+        };
         let result = if self.paused {
             if step_requested || (!self.about.open && is_key_pressed(KeyCode::F9)) {
                 self.emulator.step_instruction()
@@ -606,8 +751,10 @@ impl App {
         } else {
             let budget = accrue_cycles(&mut self.cycle_credit, delta);
             if budget > 0 {
-                let accelerated = if self.autoload.as_ref().is_some_and(AutoLoad::is_playing) {
-                    budget.max(CPU_HZ / 2)
+                let accelerated = if self.tape_audio.is_none()
+                    && self.autoload.as_ref().is_some_and(AutoLoad::is_playing)
+                {
+                    autoload_cycle_budget(budget)
                 } else {
                     budget
                 };
@@ -632,6 +779,12 @@ impl App {
                 return;
             }
         };
+        if let (Some(start), Some(audio)) = (sound_start, &self.tape_audio) {
+            let samples = self.emulator.tape_audio_samples(start, audio.sample_rate());
+            if let Err(error) = audio.enqueue(samples) {
+                self.disable_tape_audio(error);
+            }
+        }
         if let Some(loader) = &mut self.autoload {
             match loader.advance(&mut self.emulator, cycles) {
                 Ok(true) => {
@@ -646,6 +799,10 @@ impl App {
                 }
             }
         }
+        self.refresh_emulator_display();
+    }
+
+    fn refresh_emulator_display(&mut self) {
         if let Err(error) = self.emulator.refresh_display() {
             let cycles = self.emulator.cpu_snapshot().map_or(0, |cpu| cpu.cycles);
             if cycles >= 3_250_000 && !self.display_error_reported && self.autoload.is_none() {
@@ -655,6 +812,18 @@ impl App {
         } else {
             self.display_error_reported = false;
         }
+    }
+
+    fn clear_tape_audio(&mut self) {
+        if let Some(Err(error)) = self.tape_audio.as_ref().map(TapeAudio::clear) {
+            self.disable_tape_audio(error);
+        }
+    }
+
+    fn disable_tape_audio(&mut self, error: String) {
+        self.tape_audio = None;
+        self.state.tape_sound = false;
+        self.notify(format!("Tape sound disabled: {error}"));
     }
 
     fn draw(&mut self) {
@@ -769,7 +938,10 @@ impl App {
                         _ => {}
                     }
                     if self.state.scanlines_enabled && effects.scanlines > 0.0 {
-                        self.crt.draw_scanlines(screen, effects.scanlines);
+                        self.crt.draw_scanlines(
+                            screen,
+                            effects.scanlines * self.state.scanline_strength,
+                        );
                     }
                     if self.state.crt_curvature_enabled && effects.brightness > 0.0 {
                         self.crt.draw_curvature(screen);
@@ -1091,6 +1263,100 @@ mod tests {
     use super::*;
 
     #[test]
+    fn file_dialog_poll_is_nonblocking_and_preserves_selection_or_cancel() {
+        use std::{future::poll_fn, sync::mpsc};
+
+        for (mode, selected) in [
+            (LoadMode::Standard, Some(PathBuf::from("game.p"))),
+            (LoadMode::Standard, None),
+            (LoadMode::Instant, Some(PathBuf::from("game.p"))),
+            (LoadMode::Instant, None),
+        ] {
+            let (sender, receiver) = mpsc::channel::<Option<PathBuf>>();
+            let future = poll_fn(move |_| match receiver.try_recv() {
+                Ok(path) => Poll::Ready(path.map(rfd::FileHandle::from)),
+                Err(mpsc::TryRecvError::Empty) => Poll::Pending,
+                Err(mpsc::TryRecvError::Disconnected) => panic!("test sender disconnected"),
+            });
+            let mut dialog = PendingFileDialog {
+                future: Box::pin(future),
+                action: DialogAction::Open(mode),
+            };
+            assert!(dialog.poll().is_pending());
+            assert!(dialog.poll().is_pending());
+            sender.send(selected.clone()).unwrap();
+            assert_eq!(dialog.poll(), Poll::Ready(selected));
+            assert!(matches!(dialog.action, DialogAction::Open(actual) if actual == mode));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn async_file_dialog_keeps_polling_while_picker_is_open() {
+        use std::{os::unix::fs::PermissionsExt, process::Command, time::Duration};
+
+        const CHILD: &str = "ZX81_TEST_ASYNC_PICKER_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let mut dialog = PendingFileDialog {
+                future: Box::pin(rfd::AsyncFileDialog::new().pick_file()),
+                action: DialogAction::Open(LoadMode::Standard),
+            };
+            let start = std::time::Instant::now();
+            let mut pending = false;
+            loop {
+                assert!(
+                    start.elapsed() < Duration::from_secs(10),
+                    "picker timed out"
+                );
+                let poll_started = std::time::Instant::now();
+                let result = dialog.poll();
+                assert!(
+                    poll_started.elapsed() < Duration::from_millis(750),
+                    "picker blocked the frame loop"
+                );
+                match result {
+                    Poll::Pending => pending = true,
+                    Poll::Ready(path) => {
+                        assert!(pending);
+                        assert_eq!(path, Some(PathBuf::from("/tmp/selected.p")));
+                        break;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            return;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let zenity = directory.path().join("zenity");
+        std::fs::write(&zenity, "#!/bin/sh\nsleep 1\nprintf '/tmp/selected.p\\n'\n").unwrap();
+        std::fs::set_permissions(&zenity, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut path = std::ffi::OsString::from(directory.path());
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::tests::async_file_dialog_keeps_polling_while_picker_is_open",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("PATH", path)
+            .env(
+                "DBUS_SESSION_BUS_ADDRESS",
+                "unix:path=/nonexistent-zx81-test-bus",
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "picker subprocess failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn host_keys_follow_zx81_layout_and_either_shift() {
         let layout = [
             [
@@ -1278,6 +1544,14 @@ mod tests {
     }
 
     #[test]
+    fn autoload_cycle_budget_is_accelerated_but_bounded() {
+        assert_eq!(autoload_cycle_budget(1), CPU_HZ / 20);
+        assert_eq!(autoload_cycle_budget(CPU_HZ / 60), CPU_HZ / 20);
+        assert_eq!(autoload_cycle_budget(CPU_HZ / 20), CPU_HZ / 20);
+        assert_eq!(autoload_cycle_budget(CPU_HZ), CPU_HZ / 10);
+    }
+
+    #[test]
     fn save_writes_and_replaces_the_selected_file() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("program.p");
@@ -1379,11 +1653,12 @@ mod tests {
                 emulator,
                 menu: Menu::default(),
                 autoload: None,
+                tape_audio: None,
                 notification: None,
                 paused: false,
                 cycle_credit: 0.0,
                 display_error_reported: false,
-                discard_frame_time: false,
+                file_dialog: None,
                 pending_fullscreen: None,
                 confirmation_selection: 0,
                 keyboard_window: None,

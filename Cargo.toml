@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 macroquad = "0.4.14"
+cpal = "0.15"
 display-info = "0.5.10"
 dirs = "7"
 image = { version = "0.24", default-features = false, features = ["png"] }

@@ -19,6 +19,7 @@ apps:
       - x11
       - wayland
       - opengl
+      - audio-playback
       - home
       - gpu-2604
 plugs:

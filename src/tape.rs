@@ -12,6 +12,8 @@ pub struct Tape {
     bit_ends: Vec<u64>,
     elapsed: u64,
     playing: bool,
+    instant_bytes: Option<Vec<u8>>,
+    instant_position: usize,
 }
 
 impl Tape {
@@ -60,7 +62,35 @@ impl Tape {
             bit_ends,
             elapsed: 0,
             playing: false,
+            instant_bytes: None,
+            instant_position: 0,
         })
+    }
+
+    pub(crate) fn enable_instant(&mut self, bytes: &[u8]) {
+        let end = usize::from(u16::from_le_bytes([
+            bytes[END_POINTER_OFFSET],
+            bytes[END_POINTER_OFFSET + 1],
+        ]));
+        self.instant_bytes = Some(
+            std::iter::once(0x80)
+                .chain(bytes[..end - START].iter().copied())
+                .collect(),
+        );
+        self.instant_position = 0;
+    }
+
+    pub(crate) fn take_instant_byte(&mut self) -> Option<u8> {
+        if !self.playing {
+            return None;
+        }
+        let bytes = self.instant_bytes.as_ref()?;
+        let byte = bytes[self.instant_position];
+        self.instant_position += 1;
+        if self.instant_position == bytes.len() {
+            self.playing = false;
+        }
+        Some(byte)
     }
 
     pub fn inserted(&self) -> bool {
@@ -85,6 +115,9 @@ impl Tape {
         if !self.playing && self.elapsed >= *self.bit_ends.last().unwrap() {
             self.elapsed = 0;
         }
+        if !self.playing && self.instant_bytes.is_some() {
+            self.instant_position = 0;
+        }
         self.playing = !self.playing;
         Ok(())
     }
@@ -97,7 +130,14 @@ impl Tape {
         let Some(elapsed) = self.elapsed.checked_sub(cycles) else {
             return false;
         };
-        if !self.playing || elapsed < LEADER_CYCLES {
+        if !self.playing {
+            return false;
+        }
+        self.level_at(elapsed)
+    }
+
+    fn level_at(&self, elapsed: u64) -> bool {
+        if elapsed < LEADER_CYCLES {
             return false;
         }
         let index = self.bit_ends.partition_point(|end| *end <= elapsed);
@@ -113,8 +153,40 @@ impl Tape {
         offset < end - start - GAP_CYCLES && offset % WAVE_CYCLES < HIGH_CYCLES
     }
 
+    pub(crate) fn elapsed(&self) -> u64 {
+        self.elapsed
+    }
+
+    pub(crate) fn audio_samples(&self, start: u64, sample_rate: u32) -> Vec<f32> {
+        let rate = u64::from(sample_rate);
+        let cpu_rate = u64::from(crate::emulator::CPU_HZ);
+        let first = start * rate / cpu_rate;
+        let end = self.elapsed * rate / cpu_rate;
+        (first..end)
+            .map(|sample| {
+                let cycle = sample * cpu_rate / rate;
+                let index = self.bit_ends.partition_point(|end| *end <= cycle);
+                let Some(&bit_end) = self.bit_ends.get(index) else {
+                    return 0.0;
+                };
+                let bit_start = if index == 0 {
+                    LEADER_CYCLES
+                } else {
+                    self.bit_ends[index - 1]
+                };
+                if cycle < bit_start || cycle >= bit_end - GAP_CYCLES {
+                    0.0
+                } else if self.level_at(cycle) {
+                    0.15
+                } else {
+                    -0.15
+                }
+            })
+            .collect()
+    }
+
     pub fn advance(&mut self, cycles: u32) {
-        if self.playing {
+        if self.playing && self.instant_bytes.is_none() {
             self.elapsed = self.elapsed.saturating_add(u64::from(cycles));
             if self.elapsed >= *self.bit_ends.last().unwrap() {
                 self.playing = false;
@@ -132,6 +204,24 @@ mod tests {
         let end = (START + bytes.len()) as u16;
         bytes[END_POINTER_OFFSET..END_POINTER_OFFSET + 2].copy_from_slice(&end.to_le_bytes());
         bytes
+    }
+
+    #[test]
+    fn audio_samples_follow_tape_pulses_and_leave_gaps_silent() {
+        let mut tape = Tape::from_p(&valid_program()).unwrap();
+        tape.elapsed = LEADER_CYCLES + WAVE_CYCLES * 9 + GAP_CYCLES;
+        let rate = 44_100;
+        let start = LEADER_CYCLES - WAVE_CYCLES;
+        let samples = tape.audio_samples(start, rate);
+        let first = start * u64::from(rate) / u64::from(crate::emulator::CPU_HZ);
+        for (index, &sample) in samples.iter().enumerate() {
+            let cycle =
+                (first + index as u64) * u64::from(crate::emulator::CPU_HZ) / u64::from(rate);
+            assert_eq!(sample > 0.0, tape.level_at(cycle));
+        }
+        assert!(samples.contains(&0.15));
+        assert!(samples.contains(&-0.15));
+        assert!(samples.contains(&0.0));
     }
 
     #[test]

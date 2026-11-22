@@ -79,6 +79,8 @@ impl Z80 {
     pub fn bc(&self) -> u16 { unsafe { self.c2rust_unnamed_0.bc } }
     pub fn de(&self) -> u16 { unsafe { self.c2rust_unnamed_1.de } }
     pub fn hl(&self) -> u16 { unsafe { self.c2rust_unnamed_2.hl } }
+    pub fn set_af(&mut self, value: u16) { self.c2rust_unnamed.af = value; }
+    pub fn set_bc(&mut self, value: u16) { self.c2rust_unnamed_0.bc = value; }
     pub fn new() -> Self {
         Z80 {
             pc: 0,
