@@ -19,6 +19,53 @@ use crate::{
     virtual_keyboard::{Event as KeyboardEvent, KeyboardWindow},
 };
 
+const KEYS: [[KeyCode; 5]; 8] = [
+    [
+        KeyCode::LeftShift,
+        KeyCode::Z,
+        KeyCode::X,
+        KeyCode::C,
+        KeyCode::V,
+    ],
+    [KeyCode::A, KeyCode::S, KeyCode::D, KeyCode::F, KeyCode::G],
+    [KeyCode::Q, KeyCode::W, KeyCode::E, KeyCode::R, KeyCode::T],
+    [
+        KeyCode::Key1,
+        KeyCode::Key2,
+        KeyCode::Key3,
+        KeyCode::Key4,
+        KeyCode::Key5,
+    ],
+    [
+        KeyCode::Key0,
+        KeyCode::Key9,
+        KeyCode::Key8,
+        KeyCode::Key7,
+        KeyCode::Key6,
+    ],
+    [KeyCode::P, KeyCode::O, KeyCode::I, KeyCode::U, KeyCode::Y],
+    [
+        KeyCode::Enter,
+        KeyCode::L,
+        KeyCode::K,
+        KeyCode::J,
+        KeyCode::H,
+    ],
+    [
+        KeyCode::Space,
+        KeyCode::Period,
+        KeyCode::M,
+        KeyCode::N,
+        KeyCode::B,
+    ],
+];
+
+fn host_key_down(key: KeyCode, is_down: impl Fn(KeyCode) -> bool) -> bool {
+    is_down(key)
+        || (key == KeyCode::LeftShift && is_down(KeyCode::RightShift))
+        || (matches!(key, KeyCode::LeftShift | KeyCode::Period) && is_down(KeyCode::Comma))
+}
+
 pub struct AppState {
     pub fullscreen: bool,
     pub fullscreen_confirmation: bool,
@@ -533,46 +580,6 @@ impl App {
     }
 
     fn update_machine(&mut self, delta: f32, menu_consumed: bool, step_requested: bool) {
-        const KEYS: [[KeyCode; 5]; 8] = [
-            [
-                KeyCode::LeftShift,
-                KeyCode::Z,
-                KeyCode::X,
-                KeyCode::C,
-                KeyCode::V,
-            ],
-            [KeyCode::A, KeyCode::S, KeyCode::D, KeyCode::F, KeyCode::G],
-            [KeyCode::Q, KeyCode::W, KeyCode::E, KeyCode::R, KeyCode::T],
-            [
-                KeyCode::Key1,
-                KeyCode::Key2,
-                KeyCode::Key3,
-                KeyCode::Key4,
-                KeyCode::Key5,
-            ],
-            [
-                KeyCode::Key0,
-                KeyCode::Key9,
-                KeyCode::Key8,
-                KeyCode::Key7,
-                KeyCode::Key6,
-            ],
-            [KeyCode::P, KeyCode::O, KeyCode::I, KeyCode::U, KeyCode::Y],
-            [
-                KeyCode::Enter,
-                KeyCode::L,
-                KeyCode::K,
-                KeyCode::J,
-                KeyCode::H,
-            ],
-            [
-                KeyCode::Space,
-                KeyCode::Period,
-                KeyCode::M,
-                KeyCode::N,
-                KeyCode::B,
-            ],
-        ];
         let accepts_keys = self.autoload.is_none()
             && !self.menu.is_open()
             && !menu_consumed
@@ -582,9 +589,7 @@ impl App {
         if self.autoload.is_none() {
             for (row, keys) in KEYS.iter().enumerate() {
                 for (column, key) in keys.iter().enumerate() {
-                    let pressed = accepts_keys
-                        && (is_key_down(*key)
-                            || (row == 0 && column == 0 && is_key_down(KeyCode::RightShift)))
+                    let pressed = accepts_keys && host_key_down(*key, is_key_down)
                         || self.state.virtual_keys[row][column];
                     self.emulator
                         .set_key(row, column, pressed)
@@ -653,6 +658,17 @@ impl App {
     }
 
     fn draw(&mut self) {
+        let capture = if std::mem::take(&mut self.screenshot_requested) {
+            match begin_screenshot_capture() {
+                Ok(target) => Some(target),
+                Err(error) => {
+                    self.notify(format!("Cannot capture CRT screenshot: {error}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
         clear_background(Color::from_rgba(16, 18, 19, 255));
         let (background, scene, monitor_area) =
             scene_layout(Rect::new(0.0, 0.0, screen_width(), screen_height()));
@@ -788,9 +804,8 @@ impl App {
                 RenderLayer::CrtReflections => {}
             }
         }
-        if std::mem::take(&mut self.screenshot_requested) {
-            let image = get_screen_data();
-            match crop_crt_screenshot(&image, screen, screen_width(), screen_height()) {
+        if let Some(target) = capture {
+            match finish_screenshot_capture(&target, screen) {
                 Ok(screenshot) => self.pending_screenshot = Some(screenshot),
                 Err(error) => self.notify(format!("Cannot capture CRT screenshot: {error}")),
             }
@@ -965,6 +980,47 @@ fn write_file_atomically(path: &std::path::Path, bytes: &[u8]) -> std::io::Resul
     Ok(())
 }
 
+fn begin_screenshot_capture() -> std::io::Result<RenderTarget> {
+    let (width, height) = macroquad::miniquad::window::screen_size();
+    if !width.is_finite()
+        || !height.is_finite()
+        || width < 1.0
+        || height < 1.0
+        || width > u16::MAX as f32
+        || height > u16::MAX as f32
+        || screen_width() <= 0.0
+        || screen_height() <= 0.0
+    {
+        return Err(std::io::Error::other("invalid screenshot dimensions"));
+    }
+    let target = render_target(width as u32, height as u32);
+    set_camera(&Camera2D {
+        render_target: Some(target.clone()),
+        ..Camera2D::from_display_rect(Rect::new(0.0, 0.0, screen_width(), screen_height()))
+    });
+    Ok(target)
+}
+
+fn finish_screenshot_capture(
+    target: &RenderTarget,
+    screen: Rect,
+) -> std::io::Result<image::RgbaImage> {
+    set_default_camera();
+    let image = target.texture.get_texture_data();
+    draw_texture_ex(
+        &target.texture,
+        0.0,
+        0.0,
+        WHITE,
+        DrawTextureParams {
+            dest_size: Some(vec2(screen_width(), screen_height())),
+            flip_y: true,
+            ..Default::default()
+        },
+    );
+    crop_crt_screenshot(&image, screen, screen_width(), screen_height())
+}
+
 fn crop_crt_screenshot(
     framebuffer: &Image,
     screen: Rect,
@@ -1006,7 +1062,7 @@ fn crop_crt_screenshot(
     }
     let mut pixels = Vec::with_capacity((right - left) as usize * (bottom - top) as usize * 4);
     for y in top..bottom {
-        // Macroquad's screen readback is bottom-up.
+        // Render-target readback is bottom-up.
         let start = ((height - 1 - y) * width + left) as usize * 4;
         pixels.extend_from_slice(&framebuffer.bytes[start..start + (right - left) as usize * 4]);
     }
@@ -1033,6 +1089,87 @@ fn write_screenshot_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_keys_follow_zx81_layout_and_either_shift() {
+        let layout = [
+            [
+                KeyCode::Key1,
+                KeyCode::Key2,
+                KeyCode::Key3,
+                KeyCode::Key4,
+                KeyCode::Key5,
+                KeyCode::Key6,
+                KeyCode::Key7,
+                KeyCode::Key8,
+                KeyCode::Key9,
+                KeyCode::Key0,
+            ],
+            [
+                KeyCode::Q,
+                KeyCode::W,
+                KeyCode::E,
+                KeyCode::R,
+                KeyCode::T,
+                KeyCode::Y,
+                KeyCode::U,
+                KeyCode::I,
+                KeyCode::O,
+                KeyCode::P,
+            ],
+            [
+                KeyCode::A,
+                KeyCode::S,
+                KeyCode::D,
+                KeyCode::F,
+                KeyCode::G,
+                KeyCode::H,
+                KeyCode::J,
+                KeyCode::K,
+                KeyCode::L,
+                KeyCode::Enter,
+            ],
+            [
+                KeyCode::LeftShift,
+                KeyCode::Z,
+                KeyCode::X,
+                KeyCode::C,
+                KeyCode::V,
+                KeyCode::B,
+                KeyCode::N,
+                KeyCode::M,
+                KeyCode::Period,
+                KeyCode::Space,
+            ],
+        ];
+        for (display_row, keys) in layout.iter().enumerate() {
+            for (display_column, key) in keys.iter().enumerate() {
+                let row = if display_column < 5 {
+                    3 - display_row
+                } else {
+                    4 + display_row
+                };
+                let column = if display_column < 5 {
+                    display_column
+                } else {
+                    9 - display_column
+                };
+                assert_eq!(KEYS[row][column], *key);
+            }
+        }
+        for shift in [KeyCode::LeftShift, KeyCode::RightShift] {
+            assert!(host_key_down(KeyCode::LeftShift, |key| key == shift));
+            assert!(!host_key_down(KeyCode::Period, |key| key == shift));
+        }
+        assert!(host_key_down(KeyCode::Period, |key| key == KeyCode::Period));
+        for key in KEYS.iter().flatten() {
+            assert_eq!(
+                host_key_down(*key, |pressed| pressed == KeyCode::Comma),
+                matches!(key, KeyCode::LeftShift | KeyCode::Period),
+                "host comma mapping for {key:?}"
+            );
+        }
+    }
 
     #[test]
     fn background_and_monitor_fit_at_different_window_sizes() {
@@ -1174,6 +1311,97 @@ mod tests {
             write_screenshot_file(&directory.path().join("missing/capture.png"), &screenshot)
                 .is_err()
         );
+    }
+
+    #[test]
+    #[ignore = "requires an X11 graphical display on Linux"]
+    fn screenshot_captures_rendered_crt_pixels() {
+        let config = Conf {
+            window_title: "CRT screenshot test".to_owned(),
+            window_width: 160,
+            window_height: 120,
+            high_dpi: true,
+            platform: macroquad::miniquad::conf::Platform {
+                linux_backend: macroquad::miniquad::conf::LinuxBackend::X11Only,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        macroquad::Window::from_config(config, async {
+            let target = begin_screenshot_capture().unwrap();
+            clear_background(BLACK);
+            let screen = Rect::new(10.0, 10.0, 40.0, 40.0);
+            draw_rectangle(10.0, 10.0, 40.0, 20.0, Color::from_rgba(200, 30, 40, 255));
+            draw_rectangle(10.0, 30.0, 40.0, 20.0, Color::from_rgba(20, 210, 50, 255));
+            let screenshot = finish_screenshot_capture(&target, screen).unwrap();
+            draw_rectangle(10.0, 10.0, 40.0, 40.0, BLUE);
+
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("capture.png");
+            write_screenshot_file(&path, &screenshot).unwrap();
+            let decoded = image::open(&path).unwrap().to_rgba8();
+            let (width, height) = decoded.dimensions();
+            assert_eq!(
+                decoded.get_pixel(width / 2, height / 4).0,
+                [200, 30, 40, 255]
+            );
+            assert_eq!(
+                decoded.get_pixel(width / 2, height * 3 / 4).0,
+                [20, 210, 50, 255]
+            );
+
+            let mut emulator = EmulatorCore::new();
+            let mut pixels =
+                vec![0; crate::emulator::SCREEN_WIDTH * crate::emulator::SCREEN_HEIGHT];
+            pixels[..crate::emulator::SCREEN_WIDTH * crate::emulator::SCREEN_HEIGHT / 2].fill(255);
+            emulator.write_display_buffer(&pixels).unwrap();
+            let mut state = AppState::default();
+            state.scanlines_enabled = false;
+            state.crt_reflections_enabled = false;
+            state.flicker_enabled = false;
+            state.show_settings = true;
+            state.show_debug = true;
+            let mut experience = Experience::default();
+            experience.screen = ScreenState::Ready;
+            let mut app = App {
+                bezel: TvAssets {
+                    tv_cabinet: None,
+                    crt_glass: None,
+                    crt_reflections: None,
+                    crt_shadow_mask: None,
+                    tv_shadow: None,
+                },
+                background: None,
+                title: None,
+                crt: Crt::new(),
+                state,
+                experience,
+                emulator,
+                menu: Menu::default(),
+                autoload: None,
+                notification: None,
+                paused: false,
+                cycle_credit: 0.0,
+                display_error_reported: false,
+                discard_frame_time: false,
+                pending_fullscreen: None,
+                confirmation_selection: 0,
+                keyboard_window: None,
+                screenshot_requested: true,
+                pending_screenshot: None,
+                about: About::new(),
+            };
+            app.draw();
+            let screenshot = app.pending_screenshot.take().unwrap();
+            write_screenshot_file(&path, &screenshot).unwrap();
+            let decoded = image::open(&path).unwrap().to_rgba8();
+            let (width, height) = decoded.dimensions();
+            assert_eq!(decoded.get_pixel(width / 2, height / 4).0, [255; 4]);
+            assert_eq!(
+                decoded.get_pixel(width / 2, height * 3 / 4).0,
+                [0, 0, 0, 255]
+            );
+        });
     }
 
     #[test]

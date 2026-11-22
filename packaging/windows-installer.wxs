@@ -1,0 +1,46 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Emulator-81" Manufacturer="Neil Feltham" Version="0.1.0"
+           UpgradeCode="e6056ddc-a567-499a-b5ee-09f8974aedf5" Scope="perMachine">
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of Emulator-81 is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="ApplicationIcon.ico" SourceFile="$(ProjectRoot)\packaging\emulator-81.ico" />
+    <Property Id="ARPPRODUCTICON" Value="ApplicationIcon.ico" />
+    <Property Id="INSTALLFOLDER">
+      <RegistrySearch Id="PreviousInstallFolder" Root="HKLM"
+                      Key="Software\Emulator-81\WiX" Name="InstallLocation" Type="raw" />
+    </Property>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Emulator-81">
+        <Directory Id="AssetsFolder" Name="assets" />
+        <Directory Id="RomFolder" Name="rom" />
+        <Directory Id="GamesFolder" Name="Games Library" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ProgramMenuDir" Name="Emulator-81" />
+    </StandardDirectory>
+
+    <Feature Id="Application" Title="Emulator-81" Level="1">
+      <Component Directory="INSTALLFOLDER">
+        <File Id="EmulatorExecutable" Source="$(WindowsBinary)" KeyPath="yes">
+          <Shortcut Id="ApplicationShortcut" Directory="ProgramMenuDir"
+                    Name="Emulator-81" Icon="ApplicationIcon.ico"
+                    WorkingDirectory="INSTALLFOLDER" />
+        </File>
+        <Shortcut Id="UninstallShortcut" Directory="ProgramMenuDir"
+                  Name="Uninstall" Target="[SystemFolder]msiexec.exe"
+                  Arguments="/x [ProductCode]" />
+        <RegistryValue Root="HKLM" Key="Software\Emulator-81\WiX"
+                       Name="InstallLocation" Type="string" Value="[INSTALLFOLDER]" />
+        <RemoveFolder Id="RemoveProgramMenuDir" Directory="ProgramMenuDir" On="uninstall" />
+      </Component>
+      <Component Directory="RomFolder">
+        <File Source="$(ProjectRoot)\rom\zx81.rom" KeyPath="yes" />
+      </Component>
+      <Files Directory="AssetsFolder" Include="$(ProjectRoot)\assets\**" />
+      <Files Directory="GamesFolder" Include="$(ProjectRoot)\Games Library\**" />
+    </Feature>
+  </Package>
+</Wix>

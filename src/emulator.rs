@@ -563,6 +563,29 @@ mod tests {
     }
 
     #[test]
+    fn bundled_rom_accepts_shift_period_as_comma() {
+        let mut core = EmulatorCore::new();
+        core.load_rom_bytes(include_bytes!("../rom/zx81.rom"))
+            .unwrap();
+        core.run_cycles(CPU_HZ * 15).unwrap();
+        core.set_key(5, 0, true).unwrap();
+        core.run_cycles(CPU_HZ / 5).unwrap();
+        core.set_key(5, 0, false).unwrap();
+        core.run_cycles(CPU_HZ / 5).unwrap();
+        core.set_key(0, 0, true).unwrap();
+        core.run_cycles(CPU_HZ / 5).unwrap();
+        core.set_key(7, 1, true).unwrap();
+        core.run_cycles(CPU_HZ / 5).unwrap();
+        core.set_key(0, 0, false).unwrap();
+        core.set_key(7, 1, false).unwrap();
+        core.run_cycles(CPU_HZ / 5).unwrap();
+        let memory = &core.machine.as_ref().unwrap().memory;
+        let start = u16::from_le_bytes([memory.read8(0x4014), memory.read8(0x4015)]);
+        assert_eq!(memory.read8(start), 0xf5); // PRINT
+        assert_eq!(memory.read8(start + 1), 0x1a); // comma
+    }
+
+    #[test]
     fn refresh_display_requires_a_valid_initialized_display_file() {
         let mut core = EmulatorCore::new();
         assert_eq!(

@@ -76,9 +76,11 @@ pub fn window_conf() -> Conf {
         window_height: 402,
         window_resizable: true,
         high_dpi: true,
+        icon: Some(crate::config::application_icon()),
         platform: macroquad::miniquad::conf::Platform {
             swap_interval: Some(1),
             linux_backend: macroquad::miniquad::conf::LinuxBackend::WaylandWithX11Fallback,
+            linux_wm_class: crate::config::application_window_class(),
             ..Default::default()
         },
         ..Default::default()
@@ -324,9 +326,59 @@ mod tests {
             89.0, 232.0, 374.0, 520.0, 664.0, 805.0, 949.0, 1094.0, 1238.0, 1382.0,
         ];
         let y = [86.0, 268.0, 467.0, 659.0];
+        let expected = [
+            [
+                (3, 0),
+                (3, 1),
+                (3, 2),
+                (3, 3),
+                (3, 4),
+                (4, 4),
+                (4, 3),
+                (4, 2),
+                (4, 1),
+                (4, 0),
+            ],
+            [
+                (2, 0),
+                (2, 1),
+                (2, 2),
+                (2, 3),
+                (2, 4),
+                (5, 4),
+                (5, 3),
+                (5, 2),
+                (5, 1),
+                (5, 0),
+            ],
+            [
+                (1, 0),
+                (1, 1),
+                (1, 2),
+                (1, 3),
+                (1, 4),
+                (6, 4),
+                (6, 3),
+                (6, 2),
+                (6, 1),
+                (6, 0),
+            ],
+            [
+                (0, 0),
+                (0, 1),
+                (0, 2),
+                (0, 3),
+                (0, 4),
+                (7, 4),
+                (7, 3),
+                (7, 2),
+                (7, 1),
+                (7, 0),
+            ],
+        ];
         for (width, height) in [(1469.0, 768.0), (1024.0, 700.0), (400.0, 400.0)] {
             let bounds = image_rect(width, height);
-            for (row, keys) in MATRIX.iter().enumerate() {
+            for (row, keys) in expected.iter().enumerate() {
                 for (column, &expected) in keys.iter().enumerate() {
                     let point = vec2(
                         bounds.x + x[column] * bounds.w / IMAGE_WIDTH,
@@ -338,6 +390,7 @@ mod tests {
                     );
                 }
             }
+
             assert_eq!(key_at(vec2(bounds.x + 1.0, bounds.y + 1.0), bounds), None);
             let gap = vec2(
                 bounds.x + 160.0 * bounds.w / IMAGE_WIDTH,
@@ -345,6 +398,18 @@ mod tests {
             );
             assert_eq!(key_at(gap, bounds), None);
         }
+    }
+
+    #[test]
+    fn shifted_period_sends_shift_and_period() {
+        let bounds = image_rect(IMAGE_WIDTH, IMAGE_HEIGHT);
+        let mut input = KeyboardInput::default();
+        input.press(key_at(vec2(90.0, 660.0), bounds));
+        input.release();
+        input.press(key_at(vec2(1238.0, 660.0), bounds));
+        assert_eq!(input.mask(), key_bit((0, 0)) | key_bit((7, 1)));
+        input.release();
+        assert_eq!(input.mask(), 0);
     }
 
     #[test]

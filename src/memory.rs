@@ -192,6 +192,26 @@ mod tests {
     }
 
     #[test]
+    fn every_keyboard_position_is_read_from_its_selected_row() {
+        let mut memory = Memory::new(&[0; ROM_SIZE]).unwrap();
+        for row in 0..8 {
+            for column in 0..5 {
+                memory.set_key(row, column, true).unwrap();
+                for selected_row in 0..8 {
+                    let port = (u16::from(!(1u8 << selected_row)) << 8) | 0xfe;
+                    let expected = if selected_row == row {
+                        0x7f & !(1 << column)
+                    } else {
+                        0x7f
+                    };
+                    assert_eq!(memory.port_in(port), expected, "key ({row}, {column})");
+                }
+                memory.set_key(row, column, false).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn opcode_fetches_are_distinct_from_data_reads() {
         let mut memory = Memory::new(&[0; ROM_SIZE]).unwrap();
         memory.write8(0x4000, 0x3e);

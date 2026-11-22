@@ -30,10 +30,9 @@ Building the emulator from first principles provides a much deeper appreciation 
 
 ## Build and run
 
-Install a current stable Rust toolchain, then:
+Install a current stable Rust toolchain, then run from the repository root:
 
 ```sh
-cd ZX81_Emulator
 cargo build --release
 cargo run --release # automatically loads rom/zx81.rom if present
 # Or select a different legally obtained original 8K ZX81 ROM:
@@ -41,15 +40,17 @@ cargo run --release -- --rom /path/to/zx81.rom
 ```
 
 The application targets Windows, Linux, and macOS. Linux builds need the
-X11/XCB development libraries used by the display information crate. Native file
-dialogs use the XDG desktop portal, with Zenity as a fallback. A working graphical
-session is required.
+X11/XCB development libraries used by the display information crate. On Linux,
+file dialogs use the XDG desktop portal, with Zenity as a fallback. A working
+graphical session is required.
 
 ### Release packages
 
-The x86-64 Linux AppImage, Flatpak and Snap bundles, and Windows installer in
-`dist/` include the artwork, games library, and `rom/zx81.rom`. They can still
-select a different legally obtained ROM with `--rom /path/to/zx81.rom`.
+The x86-64 Linux AppImage, Flatpak and Snap bundles, and Windows installer and
+portable ZIP in `dist/` include the artwork, games library, and `rom/zx81.rom`.
+They can still select a different legally obtained ROM with
+`--rom /path/to/zx81.rom`. Existing packages do not automatically include
+later source changes; rebuild them to pick up the latest fixes and artwork.
 
 **AppImage:** run the image directly:
 
@@ -84,12 +85,27 @@ The Snap uses the `core26` base and the `mesa-2604` graphics content provider.
 If the graphics plug is not automatically connected, run
 `sudo snap connect emulator-81:gpu-2604 mesa-2604:gpu-2604`.
 
-**Windows:** run `dist/Emulator-81-Setup.exe` to install the application. The
-installer is unsigned and may trigger an operating-system warning.
+**Windows installer:** run `dist/Emulator-81-Setup.msi` to install the
+application. The installer is unsigned and may trigger an operating-system
+warning. Uninstall any older NSIS-based installation first; the WiX installer
+does not automatically replace it. The basic installer uses
+`C:\Program Files\Emulator-81`; to choose another folder, run:
 
-To rebuild the AppImage and Windows installer from the project directory, run
-`sh packaging/build-release.sh`. It requires `appimagetool`, NSIS, the
-`x86_64-pc-windows-gnu` Rust target, and a MinGW-w64 cross-compiler.
+```powershell
+msiexec /i dist\Emulator-81-Setup.msi INSTALLFOLDER="C:\Emulator-81"
+```
+
+**Windows portable:** extract all of
+`dist/Emulator-81-Windows-Portable-x86_64.zip`, then run `zx81_emulator.exe`
+from the extracted folder. Keep the `assets`, `rom`, and `Games Library`
+folders alongside the executable.
+
+To rebuild the AppImage, WiX installer and Windows portable ZIP from the project
+directory, run `sh packaging/build-release.sh`. It requires `appimagetool`,
+`zip`, WiX 5, the `x86_64-pc-windows-gnu` Rust target, and a MinGW-w64
+cross-compiler. WiX requires Windows; on Linux, `WIX` can point to a wrapper
+that runs WiX under Wine and translates the path arguments to Windows paths.
+Wine is not an officially supported WiX host.
 
 To rebuild the Flatpak and Snap on an x86-64 Ubuntu 26.04 host, install Cargo,
 Flatpak, Snap, `apt-get`, `dpkg-deb`, `mksquashfs`, and the Flatpak
@@ -101,8 +117,9 @@ sh packaging/build-linux-bundles.sh /path/to/a/new/build-directory
 
 The script downloads the Ubuntu `libxi6` and `xkb-data` packages for the Snap,
 leaves intermediate files in that build directory, and writes the bundles to
-`dist/`. No macOS installer is currently provided; a macOS build requires an
-Apple toolchain and SDK.
+`dist/`. Both release scripts respect `CARGO_TARGET_DIR` if it is set.
+No macOS installer is currently provided; a macOS build requires an Apple
+toolchain and SDK.
 
 The window starts at 800 × 600, is resizable, requests high-DPI rendering and
 VSync, and is centered on the primary display when the platform supports
@@ -149,7 +166,7 @@ that window, or toggle it off from the View menu.
 **File > Save CRT Screenshot** captures the CRT after its visual effects and
 opens a save dialog for a `.png` file. The surrounding cabinet and interface
 overlays are not included. **Help > About Emulator-81** displays the project
-information in a movable window; close it with its X button or Esc.
+information in a movable panel; close it with its X button or Esc.
 
 Click a menu and then an item; click outside or press Esc to dismiss it.
 Available keyboard shortcuts are shown beside their menu items. The red-grid background fills a 4:3
@@ -162,17 +179,21 @@ tiled; the scene remains fitted without stretching in those cases.
 Close the window to quit. In settings, use Up/Down to select and Enter, Space,
 Left or Right to change an option or activate Reset/Power Cycle. Settings last
 for the current run. F4 currently shades the edges rather than warping the
-display image; startup beam edges are curved procedurally. Fullscreen status
-reports the application's most recent request;
-the platform may decline a fullscreen request.
+display image; startup beam edges are curved procedurally. Bloom affects the
+startup and shutdown beams and simulated text; phosphor glow affects simulated
+text only. Neither effect is applied to the active ROM display. Fullscreen status
+reports the application's most recent request; the platform may decline a
+fullscreen request.
 
 ## ZX81 experience
 
 Startup takes about 3.5 seconds: a cold screen, a point and line, vertical
-expansion, stabilization and a phosphor warm-up lead to READY. Ctrl+R plays a
-1.5-second shutdown and then restarts the warm-up. The F1 CRT warm-up setting
-can skip the startup animation; it does not skip shutdown. The cabinet power
-indicator is lit while powered on and flashes during a power cycle.
+expansion, stabilization and a phosphor warm-up lead to the normal display.
+With a ROM, this is the ZX81 display rather than the simulated READY message.
+Ctrl+R plays a 1.5-second shutdown and then restarts the warm-up. The F1 CRT
+warm-up setting can skip the startup animation; it does not skip shutdown.
+The cabinet power indicator is lit while powered on and flashes during a power
+cycle.
 `CrtWarmupSettings` in `src/experience.rs` contains the startup duration,
 bloom and flicker strengths, scanline fade time and startup randomization.
 These settings are code defaults, not a persistent configuration file.
@@ -202,8 +223,8 @@ successful load.
 
 To save the current BASIC program, first finish entering any line and return
 to the K prompt, then choose **File > Save File**. The native save dialog
-allows navigation to the home folder or elsewhere and confirms replacement of
-an existing file. Use a `.p` filename. This exports the ZX81 program and
+allows navigation to the home folder or elsewhere; overwrite confirmation
+depends on the platform. Use a `.p` filename. This exports the ZX81 program and
 system variables, not a complete emulator save state. Loading it resets the
 machine and automatically runs the program.
 
@@ -230,7 +251,9 @@ the 8K ROM and 16K RAM pack with their normal mirrors and ROM write protection.
 `EmulatorCore::load_rom` or `load_rom_bytes` validates an externally supplied
 8192-byte ROM; `step_instruction` executes one CPU instruction and returns its
 T-state count. In ROM mode, host alphanumeric keys, both Shift keys, Enter,
-Space and period drive the active-low matrix. The release packages include the
+Space and period drive the active-low matrix. A host comma key also sends
+ZX81 Shift+period, supporting keyboards that translate that combination to
+a comma before sending it over USB. The release packages include the
 repository's 8 KB ZX81 ROM.
 The [ZX80/ZX81 ROM archive](https://github.com/spectrumforeveryone/zx-roms/tree/main/zx80-81)
 states that its ROMs are used with permission from Nine Tiles.
@@ -238,7 +261,7 @@ states that its ROMs are used with permission from Nine Tiles.
 The `.P` file is validated against its `E_LINE` and display-file pointers and
 translated into a synthetic cassette input signal; the ROM completes the load.
 For compatibility with library files that contain it, a single trailing byte
-beyond `E_LINE` is reported and ignored.
+beyond `E_LINE` is reported on stderr and ignored.
 The generated tape has an unnamed header. `.P81`, `.TAP` and `.WAV` are not
 supported. The F12 overlay shows CPU registers, the next raw opcode and elapsed
 T-states.
@@ -301,6 +324,9 @@ The files loaded from `assets/bezel/` are `tv_cabinet.png`, `tv_shadow.png`,
 images must be square, transparent full-canvas layers matching the bundled
 alignment. Non-square layers are rejected with a warning and use the
 same fallback as missing artwork.
+
+The application and Linux launchers use `packaging/emulator-81-icon.png`;
+the Windows installer uses `packaging/emulator-81.ico` for its shortcut.
 
 ### Rendering and calibration
 
