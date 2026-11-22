@@ -99,7 +99,8 @@ msiexec /i dist\Emulator-81-Setup.msi INSTALLFOLDER="C:\Emulator-81"
 **Windows portable:** extract all of
 `dist/Emulator-81-Windows-Portable-x86_64.zip`, then run `zx81_emulator.exe`
 from the extracted folder. Keep the `assets`, `rom`, and `Games Library`
-folders alongside the executable.
+folders alongside the executable. Windows builds do not open a console, so
+stderr-only diagnostics may not be visible when launched from the desktop.
 
 To rebuild the AppImage, WiX installer and Windows portable ZIP from the project
 directory, run `sh packaging/build-release.sh`. It requires `appimagetool`,
