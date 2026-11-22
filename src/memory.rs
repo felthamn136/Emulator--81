@@ -2,6 +2,8 @@ use std::{cell::Cell, io};
 
 use z80::Z80_io;
 
+use crate::hardware::ram_pack::RamPack;
+
 pub const ROM_SIZE: usize = 0x2000;
 pub const RAM_SIZE: usize = 0x4000;
 
@@ -24,7 +26,7 @@ impl RamSize {
 /// 8K ROM and a selectable 1K or 16K RAM pack, including their address mirrors.
 pub struct Memory {
     rom: Box<[u8; ROM_SIZE]>,
-    ram: Box<[u8; RAM_SIZE]>,
+    ram: RamPack,
     ram_size: RamSize,
     keyboard: [u8; 8],
     nmi_enabled: bool,
@@ -46,7 +48,7 @@ impl Memory {
         })?;
         Ok(Self {
             rom: Box::new(rom),
-            ram: Box::new([0; RAM_SIZE]),
+            ram: RamPack::new(),
             ram_size,
             keyboard: [0x1f; 8],
             nmi_enabled: false,
@@ -60,7 +62,8 @@ impl Memory {
         if address < 0x4000 {
             self.rom[usize::from(address & 0x1fff)]
         } else {
-            self.ram[usize::from(address - 0x4000) & (self.ram_size.bytes() - 1)]
+            let index = (usize::from(address - 0x4000) & (self.ram_size.bytes() - 1)) as u16;
+            self.ram.read_bus(index, self.ram_size == RamSize::SixteenK)
         }
     }
 
@@ -68,7 +71,8 @@ impl Memory {
         let address = address & 0x7fff;
         if address >= 0x4000 {
             let index = usize::from(address - 0x4000) & (self.ram_size.bytes() - 1);
-            self.ram[index] = value;
+            self.ram
+                .write_bus(index as u16, value, self.ram_size == RamSize::SixteenK);
         }
     }
 
@@ -80,7 +84,15 @@ impl Memory {
     }
 
     pub fn clear_ram(&mut self) {
-        self.ram.fill(0);
+        self.ram.clear();
+    }
+
+    pub fn ram_pack(&self) -> &RamPack {
+        &self.ram
+    }
+
+    pub fn ram_pack_mut(&mut self) -> &mut RamPack {
+        &mut self.ram
     }
 
     /// Set a key in the ZX81's active-low eight-row, five-column matrix.

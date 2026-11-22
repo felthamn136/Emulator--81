@@ -43,7 +43,7 @@ pub fn window_conf() -> Conf {
         return crate::virtual_keyboard::window_conf();
     }
     Conf {
-        window_title: "ZX81 Emulator Project Prototype".to_owned(),
+        window_title: "Emulator-81".to_owned(),
         window_width: INITIAL_WINDOW_WIDTH,
         window_height: INITIAL_WINDOW_HEIGHT,
         window_resizable: true,
@@ -136,6 +136,7 @@ mod tests {
     #[test]
     fn window_is_resizable_with_four_by_three_content() {
         let config = window_conf();
+        assert_eq!(config.window_title, "Emulator-81");
         assert!(config.window_resizable);
         assert_eq!(config.window_aspect_ratio, Some((4, 3)));
         assert_eq!((config.window_width, config.window_height), (800, 600));

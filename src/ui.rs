@@ -130,7 +130,7 @@ pub fn draw_settings(scaling: &Scaling, state: &AppState, experience: &Experienc
             );
         } else if row == "SCANLINE STRENGTH" {
             draw_text(
-                &format!("{:.0}%", state.scanline_strength * 100.0),
+                format!("{:.0}%", state.scanline_strength * 100.0),
                 panel.x + panel.w - 120.0 * scaling.scale,
                 y,
                 font,
@@ -151,46 +151,6 @@ pub fn draw_settings(scaling: &Scaling, state: &AppState, experience: &Experienc
     );
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scanline_strength_adjustment_stays_within_zero_to_one() {
-        let mut state = AppState::default();
-        for _ in 0..12 {
-            adjust_scanline_strength(&mut state, false);
-        }
-        assert_eq!(state.scanline_strength, 0.0);
-
-        for _ in 0..12 {
-            adjust_scanline_strength(&mut state, true);
-        }
-        assert_eq!(state.scanline_strength, 1.0);
-    }
-
-    #[test]
-    fn settings_indices_match_the_displayed_rows() {
-        let mut state = AppState::default();
-        let mut experience = Experience::default();
-
-        activate_setting(3, &mut state, &mut experience);
-        activate_setting(4, &mut state, &mut experience);
-        activate_setting(8, &mut state, &mut experience);
-        assert!(!state.crt_reflections_enabled);
-        assert!(state.crt_curvature_enabled);
-        assert!(!state.fullscreen_confirmation);
-        assert!(matches!(
-            activate_setting(9, &mut state, &mut experience),
-            SettingsAction::Reset
-        ));
-        assert!(matches!(
-            activate_setting(10, &mut state, &mut experience),
-            SettingsAction::PowerCycle
-        ));
-    }
-}
-
 pub fn draw_fullscreen_confirmation(target_fullscreen: bool, selection: usize) {
     let width = screen_width();
     let height = screen_height();
@@ -208,7 +168,7 @@ pub fn draw_fullscreen_confirmation(target_fullscreen: bool, selection: usize) {
 
     let action = if target_fullscreen { "enter" } else { "leave" };
     draw_text(
-        &format!("CONFIRM FULLSCREEN - {action}"),
+        format!("CONFIRM FULLSCREEN - {action}"),
         panel.x + 28.0,
         panel.y + 48.0,
         22.0,
@@ -299,4 +259,44 @@ pub fn draw_notification(message: &str) {
         BLACK,
     );
     draw_text(message, 16.0, screen_height() - size * 0.6, size, WHITE);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scanline_strength_adjustment_stays_within_zero_to_one() {
+        let mut state = AppState::default();
+        for _ in 0..12 {
+            adjust_scanline_strength(&mut state, false);
+        }
+        assert_eq!(state.scanline_strength, 0.0);
+
+        for _ in 0..12 {
+            adjust_scanline_strength(&mut state, true);
+        }
+        assert_eq!(state.scanline_strength, 1.0);
+    }
+
+    #[test]
+    fn settings_indices_match_the_displayed_rows() {
+        let mut state = AppState::default();
+        let mut experience = Experience::default();
+
+        activate_setting(3, &mut state, &mut experience);
+        activate_setting(4, &mut state, &mut experience);
+        activate_setting(8, &mut state, &mut experience);
+        assert!(!state.crt_reflections_enabled);
+        assert!(state.crt_curvature_enabled);
+        assert!(!state.fullscreen_confirmation);
+        assert!(matches!(
+            activate_setting(9, &mut state, &mut experience),
+            SettingsAction::Reset
+        ));
+        assert!(matches!(
+            activate_setting(10, &mut state, &mut experience),
+            SettingsAction::PowerCycle
+        ));
+    }
 }

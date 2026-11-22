@@ -1,26 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-mod about;
-mod app;
-mod assets;
-mod autoload;
-mod bezel;
-mod config;
-mod crt;
-mod debug;
-pub mod emulator;
-pub mod experience;
-pub mod memory;
-mod menu;
-mod scaling;
-mod tape;
-mod tape_audio;
-mod ui;
-pub mod video;
-pub mod viewport;
-mod virtual_keyboard;
-
-use config::window_conf;
+use zx81_emulator::{app, config, config::window_conf, virtual_keyboard};
 
 #[macroquad::main(window_conf)]
 async fn main() {

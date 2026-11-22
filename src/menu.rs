@@ -1,25 +1,32 @@
 use macroquad::prelude::*;
 
-use crate::{app::AppState, autoload::LoadMode, experience::Experience, memory::RamSize};
+use crate::{
+    app::AppState, autoload::LoadMode, experience::Experience, hardware::ram_pack::WobbleSeverity,
+    memory::RamSize,
+};
 
 pub const BAR_HEIGHT: f32 = 36.0;
 const ROW_HEIGHT: f32 = 30.0;
 const MENU_WIDTH: f32 = 250.0;
-const TABS: [(&str, f32); 5] = [
+const TABS: [(&str, f32); 6] = [
     ("File", 75.0),
     ("Settings", 105.0),
     ("Machine", 105.0),
     ("View", 75.0),
+    ("Hardware", 110.0),
     ("Help", 75.0),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Open,
+    OpenWav,
     OpenInstant,
     TapeSound,
     BrowseGamesLibrary(LoadMode),
     Save,
+    SaveWav,
+    Exit,
     Screenshot,
     Settings,
     Setting(usize),
@@ -33,10 +40,14 @@ pub enum Action {
     Debug,
     About,
     RamSize(RamSize),
+    Wobble,
+    WobbleSeverity(WobbleSeverity),
+    TriggerWobble,
 }
 
 const FILE: &[(&str, Action)] = &[
-    ("Open File", Action::Open),
+    ("Load Program (.p)", Action::Open),
+    ("Load WAV Tape...", Action::OpenWav),
     ("Open File Instantly", Action::OpenInstant),
     (
         "Games Library (Standard Load)",
@@ -46,8 +57,10 @@ const FILE: &[(&str, Action)] = &[
         "Games Library (Instant Load)",
         Action::BrowseGamesLibrary(LoadMode::Instant),
     ),
-    ("Save File", Action::Save),
+    ("Save Program (.p)", Action::Save),
+    ("Save Program as WAV...", Action::SaveWav),
     ("Save CRT Screenshot", Action::Screenshot),
+    ("Exit", Action::Exit),
 ];
 const SETTINGS: &[(&str, Action)] = &[
     ("Settings panel", Action::Settings),
@@ -77,7 +90,23 @@ const VIEW: &[(&str, Action)] = &[
     ("Debug overlay", Action::Debug),
 ];
 const HELP: &[(&str, Action)] = &[("About Emulator-81", Action::About)];
-const ITEMS: [&[(&str, Action)]; 5] = [FILE, SETTINGS, MACHINE, VIEW, HELP];
+const HARDWARE: &[(&str, Action)] = &[
+    ("RAM Pack Wobble", Action::Wobble),
+    (
+        "Severity: Mild",
+        Action::WobbleSeverity(WobbleSeverity::Mild),
+    ),
+    (
+        "Severity: Realistic",
+        Action::WobbleSeverity(WobbleSeverity::Realistic),
+    ),
+    (
+        "Severity: Extreme",
+        Action::WobbleSeverity(WobbleSeverity::Extreme),
+    ),
+    ("Trigger Wobble", Action::TriggerWobble),
+];
+const ITEMS: [&[(&str, Action)]; 6] = [FILE, SETTINGS, MACHINE, VIEW, HARDWARE, HELP];
 
 pub fn content_rect(width: f32, height: f32) -> Rect {
     let padding = 12.0_f32.min(width.max(0.0) / 2.0);
@@ -114,6 +143,7 @@ fn shortcut(action: Action) -> Option<&'static str> {
         Action::Status => Some("F7"),
         Action::Pause => Some("F8"),
         Action::Step => Some("F9"),
+        Action::TriggerWobble => Some("F9"),
         Action::Reset => Some("F10"),
         Action::Fullscreen => Some("F11"),
         Action::Debug => Some("F12"),
@@ -180,7 +210,7 @@ impl Menu {
             }
             draw_text(title, rect.x + 10.0, 24.0, 19.0, WHITE);
         }
-        if state.program_loading && width >= 600.0 {
+        if state.program_loading && state.wav_loading.is_none() && width >= 600.0 {
             draw_text(
                 "LOADING .P...  F10 CANCEL",
                 width - 235.0,
@@ -221,9 +251,14 @@ impl Menu {
                     Action::Status => state.show_status,
                     Action::Debug => state.show_debug,
                     Action::RamSize(ram_size) => state.ram_size == ram_size,
+                    Action::Wobble => state.wobble_enabled,
+                    Action::WobbleSeverity(severity) => state.wobble_severity == severity,
                     _ => false,
                 };
-                let is_setting = matches!(action, Action::Setting(_) | Action::TapeSound);
+                let is_setting = matches!(
+                    action,
+                    Action::Setting(_) | Action::TapeSound | Action::Wobble
+                );
                 if is_setting {
                     let value = if checked { "ON" } else { "OFF" };
                     draw_text(
@@ -237,7 +272,12 @@ impl Menu {
                     draw_text("*", rect.x + 8.0, y + 22.0, 19.0, WHITE);
                 }
                 let right = rect.x + rect.w - if is_setting { 68.0 } else { 10.0 };
-                let label_right = if let Some(key) = shortcut(action) {
+                let active_shortcut = match action {
+                    Action::Step if state.wobble_enabled => None,
+                    Action::TriggerWobble if !state.wobble_enabled => None,
+                    _ => shortcut(action),
+                };
+                let label_right = if let Some(key) = active_shortcut {
                     let key_x = right - measure_text(key, None, 16, 1.0).width;
                     draw_text(key, key_x, y + 21.0, 16.0, LIGHTGRAY);
                     key_x - 8.0
@@ -282,16 +322,21 @@ mod tests {
         menu.click(vec2(10.0, 10.0), 800.0);
         assert_eq!(
             menu.click(vec2(30.0, BAR_HEIGHT + ROW_HEIGHT + 5.0), 800.0),
-            (true, Some(Action::OpenInstant))
+            (true, Some(Action::OpenWav))
         );
         menu.click(vec2(10.0, 10.0), 800.0);
         assert_eq!(
             menu.click(vec2(30.0, BAR_HEIGHT + ROW_HEIGHT * 2.0 + 5.0), 800.0),
-            (true, Some(Action::BrowseGamesLibrary(LoadMode::Standard)))
+            (true, Some(Action::OpenInstant))
         );
         menu.click(vec2(10.0, 10.0), 800.0);
         assert_eq!(
             menu.click(vec2(30.0, BAR_HEIGHT + ROW_HEIGHT * 3.0 + 5.0), 800.0),
+            (true, Some(Action::BrowseGamesLibrary(LoadMode::Standard)))
+        );
+        menu.click(vec2(10.0, 10.0), 800.0);
+        assert_eq!(
+            menu.click(vec2(30.0, BAR_HEIGHT + ROW_HEIGHT * 4.0 + 5.0), 800.0),
             (true, Some(Action::BrowseGamesLibrary(LoadMode::Instant)))
         );
         assert!(!menu.is_open());
@@ -305,7 +350,7 @@ mod tests {
         assert!(!menu.is_open());
         menu.click(vec2(10.0, 10.0), 800.0);
         assert_eq!(
-            menu.click(vec2(30.0, BAR_HEIGHT + ROW_HEIGHT * 5.0 + 5.0), 800.0),
+            menu.click(vec2(30.0, BAR_HEIGHT + ROW_HEIGHT * 7.0 + 5.0), 800.0),
             (true, Some(Action::Screenshot))
         );
     }
@@ -387,11 +432,32 @@ mod tests {
     #[test]
     fn help_menu_opens_about() {
         let mut menu = Menu::default();
-        assert_eq!(menu.click(vec2(390.0, 10.0), 800.0), (true, None));
+        assert_eq!(menu.click(vec2(490.0, 10.0), 800.0), (true, None));
         let dropdown = dropdown_rect(menu.open.unwrap(), 800.0);
         assert_eq!(
             menu.click(vec2(dropdown.x + 10.0, BAR_HEIGHT + 5.0), 800.0),
             (true, Some(Action::About))
+        );
+    }
+
+    #[test]
+    fn hardware_precedes_help_and_wav_export_is_selectable() {
+        let mut menu = Menu::default();
+        assert_eq!(menu.click(vec2(390.0, 10.0), 800.0), (true, None));
+        let hardware = dropdown_rect(menu.open.unwrap(), 800.0);
+        assert_eq!(
+            menu.click(vec2(hardware.x + 10.0, BAR_HEIGHT + 5.0), 800.0),
+            (true, Some(Action::Wobble))
+        );
+        assert_eq!(menu.click(vec2(10.0, 10.0), 800.0), (true, None));
+        assert_eq!(
+            menu.click(vec2(30.0, BAR_HEIGHT + ROW_HEIGHT * 6.0 + 5.0), 800.0),
+            (true, Some(Action::SaveWav))
+        );
+        assert_eq!(menu.click(vec2(10.0, 10.0), 800.0), (true, None));
+        assert_eq!(
+            menu.click(vec2(30.0, BAR_HEIGHT + ROW_HEIGHT * 8.0 + 5.0), 800.0),
+            (true, Some(Action::Exit))
         );
     }
 }

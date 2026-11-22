@@ -63,7 +63,9 @@ chmod +x dist/Emulator-81-x86_64.AppImage
 The AppImage requires a graphical session, compatible system graphics and
 X11/XCB or Wayland libraries, ALSA, and glibc 2.39 or newer. FUSE is normally
 required; if unavailable, pass `--appimage-extract-and-run` before other
-arguments.
+arguments. On Wayland, integrate the AppImage with your desktop (for example
+with AppImageLauncher) to install its desktop entry and icon; running it
+without desktop integration can show a generic taskbar icon.
 
 **Flatpak:** install the bundle and its GNOME 51 runtime from Flathub:
 
@@ -142,20 +144,26 @@ requests.
 | F6 | Toggle flicker |
 | F7 | Toggle the status panel |
 | F8 | Pause/run the experimental machine |
-| F9 | Single-step while paused |
+| F9 | Single-step while paused when wobble is disabled; trigger wobble when enabled |
 | F10 | Reset the experimental machine |
 | Ctrl+R | Power cycle |
 | F12 | Toggle viewport outline and debug information |
 
 The top menu bar provides:
 
-- **File**: open a `.P` program normally or instantly, save a program, browse the games library, or save a
-  PNG screenshot of the CRT (including its visual effects, but not UI overlays).
+- **File**: open a `.P` program normally or instantly, load a WAV tape, save a
+  program as `.p` or `.wav`, browse the games library, or save a PNG screenshot of the CRT
+  (including its visual effects, but not UI overlays).
 - **Settings**: open the settings panel, toggle fullscreen, tape loading sound or CRT effects, and
   adjust **SCANLINE STRENGTH** from 0% to 100% with Left/Right in the panel.
   CRT and fullscreen-confirmation toggles show ON or OFF.
 - **Machine**: pause or resume, single-step, reset, power cycle, or select 1K
   or 16K RAM. Changing the RAM size resets the machine.
+- **Hardware**: enable RAM Pack Wobble, choose its severity, or trigger it.
+  Wobble is off by default and affects only the 16K expansion. It can cause
+  lost writes, corrupt reads, address glitches, or a temporary disconnection;
+  unsaved programs can be damaged. F9 triggers it when enabled, and the Machine
+  menu still permits single-stepping.
 - **View**: toggle fullscreen, the virtual keyboard, status, or the debug overlay.
 - **Help**: open the About window.
 
@@ -204,7 +212,7 @@ cycle.
 bloom and flicker strengths, scanline fade time and startup randomization.
 These settings are code defaults, not a persistent configuration file.
 
-With a ROM loaded, choose **File > Open File** or drop a `.P` file onto the
+With a ROM loaded, choose **File > Load Program (.p)** or drop a `.P` file onto the
 window to load and run it. The file dialog requests the home folder when it
 can be determined; the Linux Zenity fallback may use its own starting folder.
 Choose **File > Games Library (Standard Load)** or **Games Library (Instant
@@ -242,11 +250,28 @@ Without a ROM, dropping a program displays an error instead of simulating a
 successful load.
 
 To save the current BASIC program, first finish entering any line and return
-to the K prompt, then choose **File > Save File**. The native save dialog
+to the K prompt, then choose **File > Save Program (.p)**. The native save dialog
 allows navigation to the home folder or elsewhere; overwrite confirmation
 depends on the platform. Use a `.p` filename. This exports the ZX81 program and
 system variables, not a complete emulator save state. Loading it resets the
 machine and automatically runs the program.
+
+**File > Save Program as WAV...** exports a snapshot of the current ZX81
+SAVE memory range as mono 44.1 kHz, 16-bit PCM. The export runs in the
+background and adds `.wav` when the filename has no extension. It uses an
+unnamed tape header for `LOAD ""`, followed by the same memory bytes as a
+`.p` save. The recording includes a five-second tone, one second of silence
+to synchronize the ZX81 loader, and a one-second trailing tone. The tones are
+added for playback convenience; the original ZX81 ROM uses a silent leader.
+
+**File > Load WAV Tape...** decodes a PCM WAV recording in the background,
+then loads the recovered program using the same ROM-assisted instant-load
+workflow as a `.P` file. The machine is reset and the program starts as with
+instant `.P` loading; a compatible ZX81 ROM and sufficient selected RAM are
+required. The current program is lost once loading starts. F10 cancels loading.
+The loader supports mono and stereo 8- or 16-bit PCM recordings at 22.05, 44.1,
+and 48 kHz, including the WAVs exported by the emulator. Audio decoding errors
+are reported without resetting the machine.
 
 `Experience` owns the power and display states. `EmulatorCore::write_display_buffer`
 accepts exactly 256 × 192 row-major 8-bit luminance values to replace the mock
@@ -283,7 +308,7 @@ The `.P` file is validated against its `E_LINE` and display-file pointers and
 translated into a synthetic cassette input signal; the ROM completes the load.
 For compatibility with library files that contain it, a single trailing byte
 beyond `E_LINE` is reported on stderr and ignored.
-The generated tape has an unnamed header. `.P81`, `.TAP` and `.WAV` are not
+The generated tape has an unnamed header. `.P81` and `.TAP` are not
 supported. The F12 overlay shows CPU registers, the next raw opcode and elapsed
 T-states.
 

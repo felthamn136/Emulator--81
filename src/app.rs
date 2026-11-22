@@ -18,9 +18,14 @@ use crate::{
     debug,
     emulator::{EmulatorCore, CPU_HZ},
     experience::{Experience, ScreenState},
+    hardware::ram_pack::WobbleSeverity,
     memory::RamSize,
     menu::{self, Action, Menu},
     scaling::Scaling,
+    tape::{
+        encoder::encode_program_to_pulses, signal::generate_pcm_samples, wav_loader,
+        wav_writer::write_wav,
+    },
     tape_audio::TapeAudio,
     ui::{self, SettingsAction},
     viewport,
@@ -91,8 +96,11 @@ pub struct AppState {
     pub glow_enabled: bool,
     pub flicker_enabled: bool,
     pub program_loading: bool,
+    pub wav_loading: Option<&'static str>,
     pub tape_sound: bool,
     pub ram_size: RamSize,
+    pub wobble_enabled: bool,
+    pub wobble_severity: WobbleSeverity,
 }
 
 impl Default for AppState {
@@ -114,8 +122,11 @@ impl Default for AppState {
             glow_enabled: true,
             flicker_enabled: true,
             program_loading: false,
+            wav_loading: None,
             tape_sound: false,
             ram_size: RamSize::default(),
+            wobble_enabled: false,
+            wobble_severity: WobbleSeverity::Realistic,
         }
     }
 }
@@ -148,6 +159,10 @@ pub async fn run() {
         screenshot_requested: false,
         pending_screenshot: None,
         about: About::new(),
+        wobble_events_drawn: 0,
+        wav_export: None,
+        wav_import: None,
+        wav_autoload: false,
     };
     let mut args = std::env::args_os().skip(1);
     if let Some(argument) = args.next() {
@@ -203,8 +218,15 @@ fn autoload_cycle_budget(budget: u32) -> u32 {
 
 enum DialogAction {
     Open(LoadMode),
+    OpenWav,
     SaveProgram(Vec<u8>),
     SaveScreenshot(image::RgbaImage),
+    SaveWav(Vec<u8>),
+}
+
+enum WavImportEvent {
+    Progress(&'static str),
+    Complete(Result<Vec<u8>, String>),
 }
 
 struct PendingFileDialog {
@@ -245,6 +267,10 @@ struct App {
     screenshot_requested: bool,
     pending_screenshot: Option<image::RgbaImage>,
     about: About,
+    wobble_events_drawn: u64,
+    wav_export: Option<std::sync::mpsc::Receiver<std::io::Result<PathBuf>>>,
+    wav_import: Option<std::sync::mpsc::Receiver<WavImportEvent>>,
+    wav_autoload: bool,
 }
 
 impl App {
@@ -335,6 +361,9 @@ impl App {
     }
 
     fn power_cycle(&mut self) {
+        self.wav_import = None;
+        self.wav_autoload = false;
+        self.state.wav_loading = None;
         self.clear_tape_audio();
         self.experience.start_shutdown(true);
         self.state.program_loading = false;
@@ -345,6 +374,9 @@ impl App {
     }
 
     fn reset(&mut self) {
+        self.wav_import = None;
+        self.wav_autoload = false;
+        self.state.wav_loading = None;
         self.clear_tape_audio();
         self.emulator.reset();
         self.cycle_credit = 0.0;
@@ -354,29 +386,121 @@ impl App {
         self.autoload = None;
     }
 
-    fn open_program(&mut self, path: &std::path::Path, mode: LoadMode) {
+    fn load_precondition_error(&self) -> Option<&'static str> {
         if !self.emulator.is_loaded() {
-            self.notify("A ZX81 ROM is required to run .P files; start with --rom.");
-        } else if self.autoload.is_some() {
-            self.notify("A program is already loading.");
+            Some("A ZX81 ROM is required to load programs; start with --rom.")
+        } else if self.autoload.is_some() || self.wav_import.is_some() {
+            Some("A program is already loading.")
         } else if self.paused {
-            self.notify("Resume the emulator with F8 before loading a program.");
+            Some("Resume the emulator with F8 before loading a program.")
         } else if matches!(
             self.experience.screen,
             ScreenState::PowerOff | ScreenState::Shutdown
         ) {
-            self.notify("Wait until the television is on before loading a program.");
+            Some("Wait until the television is on before loading a program.")
         } else {
-            match AutoLoad::from_path_with_mode(&mut self.emulator, path, mode) {
-                Ok(loader) => {
-                    self.clear_tape_audio();
-                    self.autoload = Some(loader);
-                    self.cycle_credit = 0.0;
-                    self.display_error_reported = false;
-                    self.notify(format!("Loading {}...", path.display()));
-                }
-                Err(error) => self.notify(format!("Cannot load {}: {error}", path.display())),
+            None
+        }
+    }
+
+    fn open_program(&mut self, path: &std::path::Path, mode: LoadMode) {
+        if let Some(error) = self.load_precondition_error() {
+            self.notify(error);
+            return;
+        }
+        match AutoLoad::from_path_with_mode(&mut self.emulator, path, mode) {
+            Ok(loader) => {
+                self.clear_tape_audio();
+                self.autoload = Some(loader);
+                self.cycle_credit = 0.0;
+                self.display_error_reported = false;
+                self.notify(format!("Loading {}...", path.display()));
             }
+            Err(error) => self.notify(format!("Cannot load {}: {error}", path.display())),
+        }
+    }
+
+    fn start_wav_import(&mut self, path: PathBuf) {
+        if let Some(error) = self.load_precondition_error() {
+            self.notify(error);
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        match std::thread::Builder::new()
+            .name("zx81-wav-import".into())
+            .spawn(move || {
+                let result = wav_loader::load_program_with_progress(&path, |stage| {
+                    let _ = sender.send(WavImportEvent::Progress(stage));
+                })
+                .map_err(|error| error.to_string());
+                if sender.send(WavImportEvent::Complete(result)).is_err() {
+                    eprintln!("WAV import finished after it was cancelled.");
+                }
+            }) {
+            Ok(_) => {
+                self.wav_import = Some(receiver);
+                self.state.wav_loading = Some("Loading WAV...");
+            }
+            Err(error) => self.notify(format!("Cannot start WAV loading: {error}")),
+        }
+    }
+
+    fn update_wav_import(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+
+        loop {
+            let event = match self.wav_import.as_ref().map(|receiver| receiver.try_recv()) {
+                Some(Ok(event)) => event,
+                Some(Err(TryRecvError::Disconnected)) => {
+                    WavImportEvent::Complete(Err("WAV decoder terminated unexpectedly".into()))
+                }
+                Some(Err(TryRecvError::Empty)) | None => return,
+            };
+            match event {
+                WavImportEvent::Progress(stage) => self.state.wav_loading = Some(stage),
+                WavImportEvent::Complete(result) => {
+                    self.wav_import = None;
+                    self.state.wav_loading = None;
+                    let bytes = match result {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            self.notify(error);
+                            return;
+                        }
+                    };
+                    if let Some(error) = self.load_precondition_error() {
+                        self.notify(error);
+                        return;
+                    }
+                    match AutoLoad::from_bytes_with_mode(
+                        &mut self.emulator,
+                        bytes,
+                        LoadMode::Instant,
+                    ) {
+                        Ok(loader) => {
+                            self.clear_tape_audio();
+                            self.autoload = Some(loader);
+                            self.wav_autoload = true;
+                            self.state.wav_loading = Some("Loading program...");
+                            self.cycle_credit = 0.0;
+                            self.display_error_reported = false;
+                        }
+                        Err(error) => self.notify(format!("Cannot load WAV program: {error}")),
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    fn finish_program_load(&mut self) {
+        self.autoload = None;
+        if self.wav_autoload {
+            self.wav_autoload = false;
+            self.state.wav_loading = None;
+            self.notify("ZX81 program loaded successfully.");
+        } else {
+            self.notify("Program loaded.");
         }
     }
 
@@ -435,6 +559,78 @@ impl App {
         });
     }
 
+    fn save_program_as_wav(&mut self) {
+        if self.wav_export.is_some() {
+            self.notify("A WAV export is already in progress.");
+            return;
+        }
+        if self.autoload.is_some() {
+            self.notify("Wait for the program to finish loading before saving.");
+            return;
+        }
+        let bytes = match self.emulator.program_image_bytes() {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.notify(format!("No ZX81 program available to export: {error}"));
+                return;
+            }
+        };
+        let dialog = rfd::AsyncFileDialog::new()
+            .set_title("Save Program as WAV")
+            .add_filter("WAV audio", &["wav", "WAV"])
+            .set_file_name("program.wav");
+        self.file_dialog = Some(PendingFileDialog {
+            future: Box::pin(dialog.save_file()),
+            action: DialogAction::SaveWav(bytes),
+        });
+    }
+
+    fn start_wav_export(&mut self, path: PathBuf, bytes: Vec<u8>) {
+        let path = match wav_filename(path) {
+            Ok(path) => path,
+            Err(error) => {
+                self.notify(format!("Failed to write WAV file: {error}"));
+                return;
+            }
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        match std::thread::Builder::new()
+            .name("zx81-wav-export".into())
+            .spawn(move || {
+                let samples = generate_pcm_samples(encode_program_to_pulses(&bytes));
+                let result = write_wav(&path, samples).map(|()| path);
+                if sender.send(result).is_err() {
+                    eprintln!("WAV export completed after its notification receiver closed.");
+                }
+            }) {
+            Ok(_) => {
+                self.wav_export = Some(receiver);
+                self.notify("Exporting program as WAV...");
+            }
+            Err(error) => self.notify(format!("Failed to write WAV file: {error}")),
+        }
+    }
+
+    fn update_wav_export(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+
+        let result = match self.wav_export.as_ref().map(|receiver| receiver.try_recv()) {
+            Some(Ok(result)) => result,
+            Some(Err(TryRecvError::Disconnected)) => Err(std::io::Error::other(
+                "WAV export worker terminated unexpectedly",
+            )),
+            Some(Err(TryRecvError::Empty)) | None => return,
+        };
+        self.wav_export = None;
+        match result {
+            Ok(path) => self.notify(format!(
+                "Program successfully saved as WAV: {}",
+                path.display()
+            )),
+            Err(error) => self.notify(format!("Failed to write WAV file: {error}")),
+        }
+    }
+
     fn save_screenshot(&mut self, screenshot: image::RgbaImage) {
         let dialog = rfd::AsyncFileDialog::new()
             .set_title("Save CRT Screenshot")
@@ -459,6 +655,7 @@ impl App {
         };
         match dialog.action {
             DialogAction::Open(mode) => self.open_program(&path, mode),
+            DialogAction::OpenWav => self.start_wav_import(path),
             DialogAction::SaveProgram(bytes) => {
                 if !path
                     .extension()
@@ -472,6 +669,7 @@ impl App {
                     self.notify(format!("Saved {}.", path.display()));
                 }
             }
+            DialogAction::SaveWav(bytes) => self.start_wav_export(path, bytes),
             DialogAction::SaveScreenshot(screenshot) => {
                 if !path
                     .extension()
@@ -493,6 +691,8 @@ impl App {
 
     fn update(&mut self) {
         let delta = get_frame_time().max(0.0);
+        self.update_wav_export();
+        self.update_wav_import();
         if let Some(error) = self.tape_audio.as_ref().and_then(TapeAudio::error) {
             self.disable_tape_audio(error);
         }
@@ -526,6 +726,15 @@ impl App {
                     action: DialogAction::Open(LoadMode::Standard),
                 });
             }
+            Some(Action::OpenWav) => {
+                let dialog = rfd::AsyncFileDialog::new()
+                    .set_title("Load WAV Tape")
+                    .add_filter("WAV audio", &["wav", "WAV"]);
+                self.file_dialog = Some(PendingFileDialog {
+                    future: Box::pin(dialog.pick_file()),
+                    action: DialogAction::OpenWav,
+                });
+            }
             Some(Action::OpenInstant) => {
                 self.file_dialog = Some(PendingFileDialog {
                     future: Box::pin(Self::file_dialog().pick_file()),
@@ -548,6 +757,14 @@ impl App {
             }
             Some(Action::BrowseGamesLibrary(mode)) => self.browse_games_library(mode),
             Some(Action::Save) => self.save_program(),
+            Some(Action::SaveWav) => self.save_program_as_wav(),
+            Some(Action::Exit) => {
+                if self.wav_export.is_some() {
+                    self.notify("Wait for the WAV export to finish before exiting.");
+                } else {
+                    macroquad::miniquad::window::request_quit();
+                }
+            }
             Some(Action::Screenshot) => self.screenshot_requested = true,
             Some(Action::About) => self.about.open = true,
             Some(Action::Settings) => self.state.show_settings = !self.state.show_settings,
@@ -576,6 +793,23 @@ impl App {
                     self.reset();
                 }
             }
+            Some(Action::Wobble) => {
+                if let Some(pack) = self.emulator.ram_pack_mut() {
+                    self.state.wobble_enabled = !self.state.wobble_enabled;
+                    pack.set_enabled(self.state.wobble_enabled);
+                } else {
+                    self.notify("A ZX81 ROM is required for RAM Pack wobble.");
+                }
+            }
+            Some(Action::WobbleSeverity(severity)) => {
+                if let Some(pack) = self.emulator.ram_pack_mut() {
+                    self.state.wobble_severity = severity;
+                    pack.set_severity(severity);
+                } else {
+                    self.notify("A ZX81 ROM is required for RAM Pack wobble.");
+                }
+            }
+            Some(Action::TriggerWobble) => self.trigger_wobble(),
             Some(Action::Fullscreen) => {
                 self.request_fullscreen(!self.state.fullscreen);
             }
@@ -633,6 +867,9 @@ impl App {
         }
         if self.emulator.is_loaded() && is_key_pressed(KeyCode::F10) {
             self.reset();
+        }
+        if self.state.wobble_enabled && is_key_pressed(KeyCode::F9) {
+            self.trigger_wobble();
         }
         if (is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl))
             && is_key_pressed(KeyCode::R)
@@ -712,9 +949,8 @@ impl App {
                 });
                 match result {
                     Ok(true) => {
-                        self.autoload = None;
                         self.cycle_credit = 0.0;
-                        self.notify("Program loaded.");
+                        self.finish_program_load();
                         break;
                     }
                     Ok(false) => {}
@@ -743,7 +979,9 @@ impl App {
             None
         };
         let result = if self.paused {
-            if step_requested || (!self.about.open && is_key_pressed(KeyCode::F9)) {
+            if step_requested
+                || (!self.state.wobble_enabled && !self.about.open && is_key_pressed(KeyCode::F9))
+            {
                 self.emulator.step_instruction()
             } else {
                 Ok(0)
@@ -788,8 +1026,7 @@ impl App {
         if let Some(loader) = &mut self.autoload {
             match loader.advance(&mut self.emulator, cycles) {
                 Ok(true) => {
-                    self.autoload = None;
-                    self.notify("Program loaded.");
+                    self.finish_program_load();
                 }
                 Ok(false) => {}
                 Err(error) => {
@@ -817,6 +1054,18 @@ impl App {
     fn clear_tape_audio(&mut self) {
         if let Some(Err(error)) = self.tape_audio.as_ref().map(TapeAudio::clear) {
             self.disable_tape_audio(error);
+        }
+    }
+
+    fn trigger_wobble(&mut self) {
+        if !self.state.wobble_enabled {
+            self.notify("Enable RAM Pack Wobble first.");
+        } else if self.state.ram_size != RamSize::SixteenK {
+            self.notify("RAM Pack Wobble requires 16K RAM.");
+        } else if let Some(pack) = self.emulator.ram_pack_mut() {
+            pack.trigger_wobble();
+        } else {
+            self.notify("A ZX81 ROM is required for RAM Pack wobble.");
         }
     }
 
@@ -857,6 +1106,11 @@ impl App {
         let scaling = Scaling::fit(monitor_area, bezel::SCENE_BOUNDS);
         let aperture = bezel::aperture_rect(&scaling);
         let screen = bezel::viewport_rect(&scaling);
+        let events = self.emulator.ram_pack().map_or(0, |pack| pack.events());
+        let wobble_visual = events != self.wobble_events_drawn
+            && self.state.wobble_enabled
+            && self.state.ram_size == RamSize::SixteenK;
+        self.wobble_events_drawn = events;
         let mut settings = self.experience.settings;
         if !self.state.flicker_enabled {
             settings.flicker_strength = 0.0;
@@ -905,12 +1159,17 @@ impl App {
                         0.0
                     };
                     self.emulator.render_screen(
-                        screen,
+                        Rect::new(
+                            screen.x + if wobble_visual { screen.w * 0.002 } else { 0.0 },
+                            screen.y,
+                            screen.w,
+                            screen.h,
+                        ),
                         &viewport::ScreenFrame {
                             state: self.experience.screen,
                             progress: self.experience.loading_progress,
                             filename: self.experience.filename.as_deref(),
-                            brightness: effects.brightness,
+                            brightness: effects.brightness * if wobble_visual { 0.94 } else { 1.0 },
                             bloom,
                             glow,
                             vertical_jitter: jitter,
@@ -985,7 +1244,9 @@ impl App {
         if self.state.show_status {
             ui::draw_status(&self.state, &self.experience);
         }
-        if let Some((message, _)) = &self.notification {
+        if let Some(stage) = self.state.wav_loading {
+            ui::draw_notification(stage);
+        } else if let Some((message, _)) = &self.notification {
             ui::draw_notification(message);
         }
         if self.state.show_debug {
@@ -1070,7 +1331,7 @@ fn scene_layout(bounds: Rect) -> (Rect, Rect, Rect) {
     content.y = content.y.max(menu::BAR_HEIGHT).min(bottom);
     content.h = (bottom - content.y).max(0.0);
     let scene = viewport::calculate_viewport(content);
-    let header = scene.h * 0.13;
+    let header = scene.h * 0.10;
     (
         background,
         scene,
@@ -1078,7 +1339,7 @@ fn scene_layout(bounds: Rect) -> (Rect, Rect, Rect) {
     )
 }
 
-const TITLE_SCALE: f32 = 0.765;
+const TITLE_SCALE: f32 = 0.765 * 0.8;
 
 fn scene_title_rect(background: Rect, texture_size: Vec2) -> Rect {
     let width = TITLE_SCALE
@@ -1115,13 +1376,13 @@ fn draw_scene_title(background: Rect, texture: Option<&Texture2D>) {
         (
             "EMULATOR-81",
             0.052,
-            0.061,
+            0.0508,
             Color::from_rgba(250, 73, 36, 255),
         ),
         (
             "ZX81 EMULATOR",
             0.031,
-            0.104,
+            0.0852,
             Color::from_rgba(65, 120, 210, 255),
         ),
     ] {
@@ -1139,6 +1400,31 @@ fn draw_scene_title(background: Rect, texture: Option<&Texture2D>) {
             },
         );
     }
+}
+
+fn wav_filename(mut path: PathBuf) -> std::io::Result<PathBuf> {
+    if path.file_name().is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "a WAV filename is required",
+        ));
+    }
+    match path.extension() {
+        None => {
+            path.set_extension("wav");
+        }
+        Some(extension) if extension.is_empty() => {
+            path.set_extension("wav");
+        }
+        Some(extension) if extension.eq_ignore_ascii_case("wav") => {}
+        Some(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the filename must end in .wav",
+            ));
+        }
+    }
+    Ok(path)
 }
 
 fn write_file_atomically(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -1261,6 +1547,19 @@ fn write_screenshot_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wav_filename_adds_or_validates_extension() {
+        assert_eq!(
+            wav_filename(PathBuf::from("program")).unwrap(),
+            PathBuf::from("program.wav")
+        );
+        assert_eq!(
+            wav_filename(PathBuf::from("program.WAV")).unwrap(),
+            PathBuf::from("program.WAV")
+        );
+        assert!(wav_filename(PathBuf::from("program.p")).is_err());
+    }
 
     #[test]
     fn file_dialog_poll_is_nonblocking_and_preserves_selection_or_cancel() {
@@ -1455,6 +1754,10 @@ mod tests {
             let (background, scene, monitor_area) =
                 scene_layout(Rect::new(0.0, 0.0, width, height));
             let monitor = Scaling::fit(monitor_area, bezel::SCENE_BOUNDS).rect(bezel::SCENE_BOUNDS);
+            let previous_area =
+                Rect::new(scene.x, scene.y + scene.h * 0.13, scene.w, scene.h * 0.87);
+            let previous_monitor =
+                Scaling::fit(previous_area, bezel::SCENE_BOUNDS).rect(bezel::SCENE_BOUNDS);
             let title = scene_title_rect(scene, title_size);
             assert!((background.w / background.h - 4.0 / 3.0).abs() < 0.00001);
             assert!(background.x >= 0.0 && background.y >= 0.0);
@@ -1462,16 +1765,20 @@ mod tests {
             assert!(background.y + background.h <= height + 0.01);
             assert!(scene.y >= menu::BAR_HEIGHT);
             assert!(monitor.x >= scene.x - 0.01);
-            assert!(monitor.y >= scene.y + scene.h * 0.13 - 0.01);
+            assert!(monitor.y >= scene.y + scene.h * 0.10 - 0.01);
             assert!(monitor.x + monitor.w <= scene.x + scene.w + 0.01);
             assert!(monitor.y + monitor.h <= scene.y + scene.h + 0.01);
+            assert!(monitor.w > previous_monitor.w && monitor.h > previous_monitor.h);
+            assert!(
+                (monitor.w / monitor.h - previous_monitor.w / previous_monitor.h).abs() < 0.00001
+            );
             assert!(title.x >= scene.x && title.y >= scene.y);
             assert!(title.x + title.w <= scene.x + scene.w);
             assert!(title.y + title.h <= monitor_area.y);
             assert!((title.w / title.h - title_size.x / title_size.y).abs() < 0.00001);
             let original_width =
                 (scene.w * 0.48).min(scene.h * 0.108 * title_size.x / title_size.y);
-            assert!((title.w - original_width * 0.9 * 0.85).abs() < 0.001);
+            assert!((title.w - original_width * 0.9 * 0.85 * 0.8).abs() < 0.001);
             assert!((title.x + title.w - (scene.x + scene.w * 0.97)).abs() < 0.001);
             assert!((title.y - (scene.y + scene.h * 0.01)).abs() < 0.001);
         }
@@ -1629,12 +1936,14 @@ mod tests {
                 vec![0; crate::emulator::SCREEN_WIDTH * crate::emulator::SCREEN_HEIGHT];
             pixels[..crate::emulator::SCREEN_WIDTH * crate::emulator::SCREEN_HEIGHT / 2].fill(255);
             emulator.write_display_buffer(&pixels).unwrap();
-            let mut state = AppState::default();
-            state.scanlines_enabled = false;
-            state.crt_reflections_enabled = false;
-            state.flicker_enabled = false;
-            state.show_settings = true;
-            state.show_debug = true;
+            let state = AppState {
+                scanlines_enabled: false,
+                crt_reflections_enabled: false,
+                flicker_enabled: false,
+                show_settings: true,
+                show_debug: true,
+                ..AppState::default()
+            };
             let mut experience = Experience::default();
             experience.screen = ScreenState::Ready;
             let mut app = App {
@@ -1665,6 +1974,10 @@ mod tests {
                 screenshot_requested: true,
                 pending_screenshot: None,
                 about: About::new(),
+                wobble_events_drawn: 0,
+                wav_export: None,
+                wav_import: None,
+                wav_autoload: false,
             };
             app.draw();
             let screenshot = app.pending_screenshot.take().unwrap();

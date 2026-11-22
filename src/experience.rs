@@ -162,9 +162,7 @@ impl Experience {
             } else {
                 0.15
             }
-        } else if matches!(self.screen, ScreenState::PowerOff) {
-            0.0
-        } else if matches!(self.screen, ScreenState::Shutdown) {
+        } else if matches!(self.screen, ScreenState::PowerOff | ScreenState::Shutdown) {
             0.0
         } else {
             1.0

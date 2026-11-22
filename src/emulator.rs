@@ -186,6 +186,9 @@ impl EmulatorCore {
                     machine.line_cycles = (machine.line_cycles + interrupt_cycles) % LINE_T_STATES;
                 }
                 machine.cycles = machine.cycles.saturating_add(u64::from(cycles));
+                if self.ram_size == RamSize::SixteenK {
+                    machine.memory.ram_pack_mut().update(cycles);
+                }
                 if machine.memory.take_display_fetch() {
                     machine.last_display_fetch = Some(machine.cycles);
                 }
@@ -205,6 +208,18 @@ impl EmulatorCore {
             .as_mut()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no ZX81 ROM loaded"))?;
         machine.memory.set_key(row, column, pressed)
+    }
+
+    pub fn ram_pack(&self) -> Option<&crate::hardware::ram_pack::RamPack> {
+        self.machine
+            .as_ref()
+            .map(|machine| machine.memory.ram_pack())
+    }
+
+    pub fn ram_pack_mut(&mut self) -> Option<&mut crate::hardware::ram_pack::RamPack> {
+        self.machine
+            .as_mut()
+            .map(|machine| machine.memory.ram_pack_mut())
     }
 
     /// Run at least the requested number of T-states, ending at an instruction boundary.
@@ -269,16 +284,27 @@ impl EmulatorCore {
 
     /// Export the current BASIC program and system variables as a ZX81 .P file.
     pub fn save_program_bytes(&self) -> io::Result<Vec<u8>> {
-        let machine = self
-            .machine
-            .as_ref()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no ZX81 ROM loaded"))?;
+        if self.machine.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "no ZX81 ROM loaded",
+            ));
+        }
         if !self.basic_cursor_visible() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "return to the BASIC K prompt before saving",
             ));
         }
+        self.program_image_bytes()
+    }
+
+    /// Capture the current ZX81 SAVE memory range, including system variables.
+    pub fn program_image_bytes(&self) -> io::Result<Vec<u8>> {
+        let machine = self
+            .machine
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no ZX81 ROM loaded"))?;
         let memory = &machine.memory;
         let end = usize::from(u16::from_le_bytes([
             memory.read8(0x4014),
@@ -288,7 +314,7 @@ impl EmulatorCore {
             memory.read8(0x400c),
             memory.read8(0x400d),
         ]));
-        if !(0x407d..=0x8000).contains(&end) || !(0x407d..end).contains(&display) {
+        if !(0x407d..=self.ram_end()).contains(&end) || !(0x407d..end).contains(&display) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid BASIC program or display-file pointers",
@@ -363,26 +389,35 @@ impl EmulatorCore {
         if !self.display_signal_active() || video::render_display_file(memory).is_err() {
             return false;
         }
-        let mut address = u16::from_le_bytes([memory.read8(0x400c), memory.read8(0x400d)]) + 1;
+        let mut address = usize::from(u16::from_le_bytes([
+            memory.read8(0x400c),
+            memory.read8(0x400d),
+        ])) + 1;
         for _ in 0..23 {
-            while memory.read8(address) != 0x76 {
+            while address < 0x8000 && memory.read8(address as u16) != 0x76 {
                 address += 1;
+            }
+            if address >= 0x8000 {
+                return false;
             }
             address += 1;
         }
+        if address + 2 >= 0x8000 {
+            return false;
+        }
         if [
-            memory.read8(address),
-            memory.read8(address + 1),
-            memory.read8(address + 2),
+            memory.read8(address as u16),
+            memory.read8((address + 1) as u16),
+            memory.read8((address + 2) as u16),
         ] != [0x1c, 0x18, 0x1c]
         {
             return false;
         }
         address += 3;
-        while memory.read8(address) == 0x00 {
+        while address < 0x8000 && memory.read8(address as u16) == 0x00 {
             address += 1;
         }
-        memory.read8(address) == 0x76
+        address < 0x8000 && memory.read8(address as u16) == 0x76
     }
 
     pub(crate) fn program_matches(&self, bytes: &[u8], display_file: u16) -> bool {
@@ -821,6 +856,57 @@ mod tests {
                 assert!(!core.basic_cursor_visible(), "self-start did not run");
             }
         }
+    }
+
+    #[test]
+    fn wobble_affects_loaded_basic_program() {
+        use crate::autoload::{AutoLoad, LoadMode};
+        use crate::hardware::ram_pack::{RamPack, WobbleFault, WobbleSeverity};
+
+        let mut core = EmulatorCore::new();
+        core.load_rom_bytes(include_bytes!("../rom/zx81.rom"))
+            .unwrap();
+        *core.ram_pack_mut().unwrap() = RamPack::with_seed(12345);
+        let program = include_bytes!("../Games Library/3D MONSTER MAZE.p");
+        let mut loader =
+            AutoLoad::from_bytes_with_mode(&mut core, program.to_vec(), LoadMode::Instant).unwrap();
+        let mut loaded = false;
+        for _ in 0..2000 {
+            let cycles = if loader.is_playing() {
+                core.run_cycles_until_tape_stops(CPU_HZ / 60).unwrap()
+            } else {
+                core.run_cycles(CPU_HZ / 60).unwrap()
+            };
+            if loader.advance(&mut core, cycles).unwrap() {
+                loaded = true;
+                break;
+            }
+        }
+        assert!(loaded);
+        let display = u16::from_le_bytes([program[3], program[4]]);
+        assert!(core.program_matches(program, display));
+        core.ram_pack_mut()
+            .unwrap()
+            .set_severity(WobbleSeverity::Extreme);
+        let mut corrupted = false;
+        for _ in 0..100 {
+            let pack = core.ram_pack_mut().unwrap();
+            pack.set_enabled(true);
+            pack.trigger_fault(WobbleFault::AddressGlitch);
+            core.run_cycles(1_000).unwrap();
+            core.ram_pack_mut().unwrap().set_enabled(false);
+            let memory = &core.machine.as_ref().unwrap().memory;
+            if (0x407d..display)
+                .any(|address| memory.read8(address) != program[usize::from(address) - 0x4009])
+            {
+                corrupted = true;
+                break;
+            }
+        }
+        assert!(
+            corrupted,
+            "address glitches did not corrupt the loaded program"
+        );
     }
 
     #[test]

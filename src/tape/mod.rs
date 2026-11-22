@@ -4,8 +4,18 @@ const START: usize = 0x4009;
 const END_POINTER_OFFSET: usize = 0x4014 - START;
 const LEADER_CYCLES: u64 = crate::emulator::CPU_HZ as u64 * 5;
 const WAVE_CYCLES: u64 = 975;
-const HIGH_CYCLES: u64 = 475;
+const HIGH_CYCLES: u64 = 503;
 const GAP_CYCLES: u64 = 4389;
+
+pub mod decoder;
+pub mod encoder;
+mod filters;
+pub mod pulse_detector;
+pub mod signal;
+mod tape_image;
+pub mod wav_loader;
+pub mod wav_writer;
+pub use wav_loader::TapeError;
 
 #[derive(Default)]
 pub struct Tape {

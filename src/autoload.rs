@@ -363,4 +363,44 @@ mod tests {
         fits[11..13].copy_from_slice(&0x4400u16.to_le_bytes());
         assert!(AutoLoad::from_bytes(&mut core, fits).is_ok());
     }
+
+    #[test]
+    fn exported_wav_decodes_and_loads_through_the_rom() {
+        use crate::tape::{
+            encoder::encode_program_to_pulses, signal::generate_pcm_samples, wav_loader,
+            wav_writer::write_wav,
+        };
+
+        let file = include_bytes!("../Games Library/3D MONSTER MAZE.p");
+        let end = usize::from(u16::from_le_bytes([file[11], file[12]])) - 0x4009;
+        let original = &file[..end];
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("maze.wav");
+        write_wav(
+            &path,
+            generate_pcm_samples(encode_program_to_pulses(original)),
+        )
+        .unwrap();
+        let decoded = wav_loader::load_program(&path).unwrap();
+        assert_eq!(decoded, original);
+
+        let mut core = EmulatorCore::new();
+        core.load_rom_bytes(include_bytes!("../rom/zx81.rom"))
+            .unwrap();
+        let mut loader =
+            AutoLoad::from_bytes_with_mode(&mut core, decoded, LoadMode::Instant).unwrap();
+        let display = u16::from_le_bytes([original[3], original[4]]);
+        for _ in 0..2000 {
+            let cycles = if loader.is_playing() {
+                core.run_cycles_until_tape_stops(CPU_HZ / 60).unwrap()
+            } else {
+                core.run_cycles(CPU_HZ / 60).unwrap()
+            };
+            if loader.advance(&mut core, cycles).unwrap() {
+                assert!(core.program_matches(original, display));
+                return;
+            }
+        }
+        panic!("decoded WAV did not finish loading");
+    }
 }
