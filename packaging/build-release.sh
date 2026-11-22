@@ -53,3 +53,10 @@ mv "$appdir/Emulator-81-Windows-Portable-x86_64.zip" dist/
   -o "$appdir/Emulator-81-Setup.msi" \
   "$project_root/packaging/windows-installer.wxs"
 mv "$appdir/Emulator-81-Setup.msi" dist/
+"$wix" build -arch x64 -dcl mszip -pdbtype none \
+  -d "Portable=1" \
+  -d "ProjectRoot=$project_root" \
+  -d "WindowsBinary=$target_dir/x86_64-pc-windows-gnu/release/zx81_emulator.exe" \
+  -o "$appdir/Emulator-81-Portable-Setup.msi" \
+  "$project_root/packaging/windows-installer.wxs"
+mv "$appdir/Emulator-81-Portable-Setup.msi" dist/
