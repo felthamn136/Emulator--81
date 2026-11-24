@@ -1273,6 +1273,10 @@ fn games_library_dir() -> std::io::Result<std::path::PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             candidates.push(parent.join("Games Library"));
+            // Also check parent's parent (for cases where exe is in a bin/ subdirectory)
+            if let Some(grandparent) = parent.parent() {
+                candidates.push(grandparent.join("Games Library"));
+            }
         }
     }
     candidates.push(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Games Library"));
