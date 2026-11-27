@@ -1,3 +1,0 @@
-#!/bin/sh
-set -eu
-exec "$APPDIR/usr/bin/zx81_emulator" "$@"
