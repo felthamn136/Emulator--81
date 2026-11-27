@@ -202,6 +202,12 @@ fullscreen confirmation. Settings last for the current run. In the panel, use
 Up/Down to select an option and Enter, Space or Left/Right to change it.
 Fullscreen confirmation is on by default.
 
+The **View > Red grid background** toggle switches between the softened grid
+(the default) and a plain dark background for the current run.
+**View > Screen-focused view** hides the cabinet and logo and enlarges the
+4:3 display while retaining the enabled CRT effects. Toggle it again to return
+to the cabinet view.
+
 The **View** menu opens the virtual keyboard in a separate window. Click SHIFT
 to latch it for the next key, or click it again to cancel. Click the red
 FUNCTION label on NEW LINE, then the desired function key, to enter function

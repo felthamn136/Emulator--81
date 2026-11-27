@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Emulator-81
+Exec=emulator-81
+Icon=${SNAP}/meta/gui/emulator-81.png
+StartupWMClass=emulator-81_emulator-81
+Terminal=false
+Categories=Game;Emulator;
