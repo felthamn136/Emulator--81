@@ -201,12 +201,18 @@ The **Settings** menu and panel control CRT effects, tape sound and
 fullscreen confirmation. Settings last for the current run. In the panel, use
 Up/Down to select an option and Enter, Space or Left/Right to change it.
 Fullscreen confirmation is on by default.
+Scanlines default to 60% strength and can be adjusted in the settings panel.
+The complete 4:3 image sits inside a slightly larger rounded CRT border, so
+edge characters remain visible without cropping or warping the image. The
+surround follows the display's edge brightness and darkens when the screen is
+blank or powered off.
 
 The **View > Red grid background** toggle switches between the softened grid
 (the default) and a plain dark background for the current run.
 **View > Screen-focused view** hides the cabinet and logo and enlarges the
 4:3 display while retaining the enabled CRT effects. Toggle it again to return
-to the cabinet view.
+to the cabinet view. The cabinet controls and labels are decorative; use the
+menus and keyboard shortcuts to operate the emulator.
 
 The **View** menu opens the virtual keyboard in a separate window. Click SHIFT
 to latch it for the next key, or click it again to cancel. Click the red

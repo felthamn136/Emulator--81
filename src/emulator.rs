@@ -122,6 +122,30 @@ impl EmulatorCore {
         })
     }
 
+    pub(crate) fn display_border_luminance(&self) -> f32 {
+        if self.is_loaded() && !self.display_signal_active() {
+            return 0.0;
+        }
+        let Some(pixels) = &self.display_buffer else {
+            return 0.0;
+        };
+        let top = &pixels[..SCREEN_WIDTH];
+        let bottom = &pixels[(SCREEN_HEIGHT - 1) * SCREEN_WIDTH..];
+        let horizontal: u32 = top
+            .iter()
+            .chain(bottom)
+            .map(|&value| u32::from(value))
+            .sum();
+        let vertical: u32 = pixels
+            .chunks_exact(SCREEN_WIDTH)
+            .skip(1)
+            .take(SCREEN_HEIGHT - 2)
+            .map(|row| u32::from(row[0]) + u32::from(row[SCREEN_WIDTH - 1]))
+            .sum();
+        let count = 2 * SCREEN_WIDTH + 2 * (SCREEN_HEIGHT - 2);
+        (horizontal + vertical) as f32 / (count as f32 * 255.0)
+    }
+
     pub fn cpu_snapshot(&self) -> Option<CpuSnapshot> {
         self.machine.as_ref().map(|machine| CpuSnapshot {
             pc: machine.cpu.pc,
@@ -550,6 +574,25 @@ impl EmulatorCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn border_luminance_follows_display_edges_and_blank_signal() {
+        let mut core = EmulatorCore::new();
+        assert_eq!(core.display_border_luminance(), 0.0);
+        let mut pixels = vec![255; SCREEN_WIDTH * SCREEN_HEIGHT];
+        for row in pixels.chunks_exact_mut(SCREEN_WIDTH) {
+            row[SCREEN_WIDTH - 1] = 0;
+        }
+        core.write_display_buffer(&pixels).unwrap();
+        assert!((0.7..0.9).contains(&core.display_border_luminance()));
+        pixels.fill(0);
+        core.write_display_buffer(&pixels).unwrap();
+        assert_eq!(core.display_border_luminance(), 0.0);
+        core.load_rom_bytes(&[0; crate::memory::ROM_SIZE]).unwrap();
+        assert_eq!(core.display_border_luminance(), 0.0);
+        core.machine.as_mut().unwrap().last_display_fetch = Some(0);
+        assert_eq!(core.display_border_luminance(), 1.0);
+    }
 
     #[test]
     fn recognizes_only_a_complete_success_report_on_the_last_display_row() {

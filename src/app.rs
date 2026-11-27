@@ -119,7 +119,7 @@ impl Default for AppState {
             show_grid_background: true,
             screen_focused: false,
             scanlines_enabled: true,
-            scanline_strength: 1.0,
+            scanline_strength: 0.6,
             crt_reflections_enabled: true,
             crt_curvature_enabled: false,
             bloom_enabled: true,
@@ -1114,9 +1114,7 @@ impl App {
         };
         let aperture = bezel::aperture_rect(&crt_scaling);
         let screen = bezel::viewport_rect(&crt_scaling);
-        if self.state.screen_focused {
-            draw_rectangle(screen.x, screen.y, screen.w, screen.h, BLACK);
-        }
+        let image = crt::image_rect(screen);
         let events = self.emulator.ram_pack().map_or(0, |pack| pack.events());
         let wobble_visual = events != self.wobble_events_drawn
             && self.state.wobble_enabled
@@ -1150,6 +1148,9 @@ impl App {
                 }
                 RenderLayer::TvCabinet if !self.state.screen_focused => {
                     bezel::draw_tv_bezel(&self.bezel, &scaling, aperture);
+                    if self.bezel.tv_cabinet.is_some() {
+                        bezel::draw_control_labels(&scaling, self.about.regular_font());
+                    }
                     bezel::draw_power_indicator(
                         &scaling,
                         self.experience.power_indicator_brightness(),
@@ -1157,6 +1158,18 @@ impl App {
                 }
                 RenderLayer::TvShadow | RenderLayer::TvCabinet => {}
                 RenderLayer::Viewport => {
+                    let border_luminance =
+                        if matches!(
+                            self.experience.screen,
+                            ScreenState::Booting | ScreenState::PowerOff | ScreenState::Shutdown
+                        ) || (self.autoload.as_ref().is_some_and(AutoLoad::is_playing)
+                            && self.emulator.tape().is_some())
+                        {
+                            0.0
+                        } else {
+                            self.emulator.display_border_luminance() * effects.brightness
+                        };
+                    self.crt.draw_screen_frame(screen, border_luminance);
                     let jitter = if self.experience.screen == ScreenState::Booting {
                         let t = self.experience.startup_fraction();
                         if (1.5 / 3.5..2.5 / 3.5).contains(&t) {
@@ -1172,10 +1185,10 @@ impl App {
                     };
                     self.emulator.render_screen(
                         Rect::new(
-                            screen.x + if wobble_visual { screen.w * 0.002 } else { 0.0 },
-                            screen.y,
-                            screen.w,
-                            screen.h,
+                            image.x + if wobble_visual { image.w * 0.002 } else { 0.0 },
+                            image.y,
+                            image.w,
+                            image.h,
                         ),
                         &viewport::ScreenFrame {
                             state: self.experience.screen,
@@ -1189,20 +1202,19 @@ impl App {
                     );
                     if self.autoload.as_ref().is_some_and(AutoLoad::is_playing) {
                         if let Some(tape) = self.emulator.tape() {
-                            self.crt
-                                .draw_loading_lines(screen, tape, effects.brightness);
+                            self.crt.draw_loading_lines(image, tape, effects.brightness);
                         }
                     }
                     match self.experience.screen {
                         ScreenState::Booting => self.crt.render_power_on(
-                            screen,
+                            image,
                             self.experience.startup_fraction(),
                             bloom,
                             (self.experience.elapsed * 16.0 + self.experience.startup_variation)
                                 .sin(),
                         ),
                         ScreenState::Shutdown => self.crt.render_shutdown(
-                            screen,
+                            image,
                             self.experience.shutdown_fraction(),
                             bloom,
                         ),
@@ -1210,26 +1222,25 @@ impl App {
                     }
                     if self.state.scanlines_enabled && effects.scanlines > 0.0 {
                         self.crt.draw_scanlines(
-                            screen,
+                            image,
                             effects.scanlines * self.state.scanline_strength,
                         );
                     }
                     if self.state.crt_curvature_enabled && effects.brightness > 0.0 {
-                        self.crt.draw_curvature(screen);
+                        self.crt.draw_curvature(image);
                     }
                     if self.state.flicker_enabled && effects.brightness > 0.0 {
                         let intensity = (get_time() as f32 * 37.0).sin().abs()
                             * settings.flicker_strength
                             * 0.25;
                         draw_rectangle(
-                            screen.x,
-                            screen.y,
-                            screen.w,
-                            screen.h,
+                            image.x,
+                            image.y,
+                            image.w,
+                            image.h,
                             Color::new(0.0, 0.0, 0.0, intensity),
                         );
                     }
-                    self.crt.draw_soft_edges(screen);
                 }
                 RenderLayer::CrtShadowMask => {
                     self.crt.draw_vignette(&self.bezel, &crt_scaling, screen)
@@ -1253,6 +1264,7 @@ impl App {
                 RenderLayer::CrtReflections => {}
             }
         }
+        self.crt.draw_soft_edges(screen);
         if let Some(target) = capture {
             match finish_screenshot_capture(&target, screen) {
                 Ok(screenshot) => self.pending_screenshot = Some(screenshot),
@@ -2024,11 +2036,71 @@ mod tests {
 
     #[test]
     #[ignore = "requires an X11 graphical display on Linux"]
+    fn crt_corners_remain_visible_and_default_scanlines_are_lighter() {
+        let config = Conf {
+            window_title: "CRT edge rendering test".to_owned(),
+            window_width: 400,
+            window_height: 300,
+            high_dpi: true,
+            platform: macroquad::miniquad::conf::Platform {
+                linux_backend: macroquad::miniquad::conf::LinuxBackend::X11Only,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        macroquad::Window::from_config(config, async {
+            let screen = Rect::new(0.0, 0.0, screen_width(), screen_height());
+            let crt = Crt::new();
+            let target = begin_screenshot_capture().unwrap();
+            clear_background(WHITE);
+            crt.draw_soft_edges(screen);
+            let image = finish_screenshot_capture(&target, screen).unwrap();
+            let (w, h) = image.dimensions();
+            assert!(image.get_pixel(0, 0).0[0] > 200);
+            assert!(image.get_pixel(w - 1, 0).0[0] > 200);
+            assert!(image.get_pixel(0, h - 1).0[0] > 200);
+            assert!(image.get_pixel(w - 1, h - 1).0[0] > 200);
+            assert!(image.get_pixel(w / 2, h / 2).0[0] > 250);
+            assert!(image.get_pixel(w / 2, h / 8).0[0] > 250);
+
+            let target = begin_screenshot_capture().unwrap();
+            clear_background(WHITE);
+            for x in [0.0, screen.w - 20.0] {
+                draw_rectangle(x, screen.h - 20.0, 20.0, 20.0, BLACK);
+                draw_rectangle(x + 2.0, screen.h - 8.0, 4.0, 4.0, WHITE);
+                draw_rectangle(x + 14.0, screen.h - 8.0, 4.0, 4.0, WHITE);
+            }
+            crt.draw_soft_edges(screen);
+            let image = finish_screenshot_capture(&target, screen).unwrap();
+            for (x, y) in [(4, h - 6), (16, h - 6), (w - 16, h - 6), (w - 4, h - 6)] {
+                assert!(image.get_pixel(x, y).0[0] > 200, "cursor pixel at {x},{y}");
+            }
+            assert!(image.get_pixel(w - 10, h - 6).0[0] < 10);
+
+            let mut darkness = Vec::new();
+            for opacity in [0.0, AppState::default().scanline_strength, 1.0] {
+                let target = begin_screenshot_capture().unwrap();
+                clear_background(WHITE);
+                crt.draw_scanlines(screen, opacity);
+                let image = finish_screenshot_capture(&target, screen).unwrap();
+                darkness.push(
+                    (0..image.height())
+                        .map(|y| 255u64 - u64::from(image.get_pixel(image.width() / 2, y).0[0]))
+                        .sum::<u64>(),
+                );
+            }
+            assert_eq!(darkness[0], 0);
+            assert!(darkness[1] > 0 && darkness[1] < darkness[2], "{darkness:?}");
+        });
+    }
+
+    #[test]
+    #[ignore = "requires an X11 graphical display on Linux"]
     fn screenshot_captures_rendered_crt_pixels() {
         let config = Conf {
             window_title: "CRT screenshot test".to_owned(),
-            window_width: 160,
-            window_height: 120,
+            window_width: 800,
+            window_height: 600,
             high_dpi: true,
             platform: macroquad::miniquad::conf::Platform {
                 linux_backend: macroquad::miniquad::conf::LinuxBackend::X11Only,
@@ -2136,6 +2208,71 @@ mod tests {
                 app.pending_screenshot.take().unwrap().width(),
                 cabinet_width
             );
+
+            let mut cursor_pixels =
+                vec![255; crate::emulator::SCREEN_WIDTH * crate::emulator::SCREEN_HEIGHT];
+            for y in 176..192 {
+                for x in (0..16).chain(240..256) {
+                    cursor_pixels[y * crate::emulator::SCREEN_WIDTH + x] = 0;
+                }
+            }
+            for y in 180..188 {
+                for x in (4..10).chain(246..252) {
+                    cursor_pixels[y * crate::emulator::SCREEN_WIDTH + x] = 255;
+                }
+            }
+            app.emulator.write_display_buffer(&cursor_pixels).unwrap();
+            for focused in [false, true] {
+                app.state.screen_focused = focused;
+                app.screenshot_requested = true;
+                app.draw();
+                let capture = app.pending_screenshot.take().unwrap();
+                let sample = |x: f32, y: f32| {
+                    let x = ((0.02 + 0.96 * x / 256.0) * capture.width() as f32) as u32;
+                    let y = ((0.02 + 0.96 * y / 192.0) * capture.height() as f32) as u32;
+                    capture.get_pixel(x, y).0[0]
+                };
+                assert!(sample(7.0, 184.0) > 200 && sample(249.0, 184.0) > 200);
+                assert!(sample(13.0, 184.0) < 20 && sample(243.0, 184.0) < 20);
+                let (w, h) = capture.dimensions();
+                for (x, y) in [
+                    (w / 2, h / 100),
+                    (w / 2, h - h / 100 - 1),
+                    (w / 100, h / 2),
+                    (w - w / 100 - 1, h / 2),
+                ] {
+                    assert!(capture.get_pixel(x, y).0[0] > 190, "surround at {x},{y}");
+                }
+                assert!(capture.get_pixel(0, 0).0[0] < 80);
+            }
+
+            app.emulator
+                .write_display_buffer(&vec![
+                    0;
+                    crate::emulator::SCREEN_WIDTH
+                        * crate::emulator::SCREEN_HEIGHT
+                ])
+                .unwrap();
+            for state in [
+                ScreenState::Ready,
+                ScreenState::PowerOff,
+                ScreenState::Booting,
+                ScreenState::Shutdown,
+            ] {
+                if state != ScreenState::Ready {
+                    app.emulator.write_display_buffer(&cursor_pixels).unwrap();
+                }
+                app.experience.screen = state;
+                app.screenshot_requested = true;
+                app.draw();
+                let capture = app.pending_screenshot.take().unwrap();
+                assert!(
+                    capture
+                        .get_pixel(capture.width() / 2, capture.height() / 100)
+                        .0[0]
+                        < 20
+                );
+            }
         });
     }
 

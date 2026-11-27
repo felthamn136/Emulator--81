@@ -11,6 +11,43 @@ use crate::{
 
 const LOADING_LINES: u32 = 192;
 const LOADING_SAMPLES: u32 = 64;
+const SCREEN_IMAGE_SCALE: f32 = 0.96;
+
+pub fn image_rect(screen: Rect) -> Rect {
+    let width = screen.w * SCREEN_IMAGE_SCALE;
+    let height = screen.h * SCREEN_IMAGE_SCALE;
+    Rect::new(
+        screen.x + (screen.w - width) / 2.0,
+        screen.y + (screen.h - height) / 2.0,
+        width,
+        height,
+    )
+}
+
+fn rounded_rect(rect: Rect, radius: f32, color: Color) {
+    draw_rectangle(
+        rect.x + radius,
+        rect.y,
+        rect.w - radius * 2.0,
+        rect.h,
+        color,
+    );
+    draw_rectangle(
+        rect.x,
+        rect.y + radius,
+        rect.w,
+        rect.h - radius * 2.0,
+        color,
+    );
+    for (x, y) in [
+        (rect.x + radius, rect.y + radius),
+        (rect.x + rect.w - radius, rect.y + radius),
+        (rect.x + radius, rect.y + rect.h - radius),
+        (rect.x + rect.w - radius, rect.y + rect.h - radius),
+    ] {
+        draw_circle(x, y, radius, color);
+    }
+}
 
 pub struct CrtVisuals {
     pub brightness: f32,
@@ -59,6 +96,27 @@ pub struct Crt;
 impl Crt {
     pub fn new() -> Self {
         Self
+    }
+
+    pub fn draw_screen_frame(&self, screen: Rect, luminance: f32) {
+        if screen.w <= 0.0 || screen.h <= 0.0 {
+            return;
+        }
+        let radius = screen.w.min(screen.h) * 0.06;
+        let border = screen.w.min(screen.h) * 0.004;
+        let luminance = luminance.clamp(0.0, 1.0);
+        draw_rectangle(screen.x, screen.y, screen.w, screen.h, BLACK);
+        rounded_rect(screen, radius, Color::from_rgba(54, 57, 57, 255));
+        rounded_rect(
+            Rect::new(
+                screen.x + border,
+                screen.y + border,
+                screen.w - border * 2.0,
+                screen.h - border * 2.0,
+            ),
+            radius - border,
+            Color::new(luminance, luminance, luminance, 1.0),
+        );
     }
 
     pub fn draw_loading_lines(&self, viewport: Rect, tape: &Tape, brightness: f32) {

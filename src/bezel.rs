@@ -4,7 +4,7 @@ use crate::{
     assets::TvAssets,
     config::{ScreenCalibration, SCREEN_CALIBRATION},
     scaling::Scaling,
-    viewport,
+    ui, viewport,
 };
 
 /// The artwork and viewport share the original asset pack's 4096px coordinates.
@@ -114,6 +114,38 @@ pub fn draw_tv_bezel(assets: &TvAssets, scaling: &Scaling, viewport: Rect) {
     }
 }
 
+pub fn draw_control_labels(scaling: &Scaling, font: &Font) {
+    let asset_scale = TV_CANVAS.w * scaling.scale / 2048.0;
+    let size = 27.0 * asset_scale;
+    if size < 6.0 {
+        return;
+    }
+    for (label, x) in [("CONTROLS", 690.0), ("POWER", 1541.0)] {
+        let point = scaling.point(
+            TV_CANVAS.x + x * TV_CANVAS.w / 2048.0,
+            TV_CANVAS.y + 1550.0 * TV_CANVAS.h / 2048.0,
+        );
+        ui::text(
+            label,
+            point.x - ui::text_width(label, font, size) / 2.0,
+            point.y,
+            size,
+            Color::from_rgba(187, 190, 185, 210),
+            font,
+        );
+    }
+}
+
+fn power_indicator_color(brightness: f32) -> Color {
+    let brightness = brightness.clamp(0.0, 1.0);
+    Color::new(
+        0.06 + 0.12 * brightness,
+        0.10 + 0.43 * brightness,
+        0.07 + 0.15 * brightness,
+        1.0,
+    )
+}
+
 pub fn draw_power_indicator(scaling: &Scaling, brightness: f32) {
     let center = scaling.point(
         TV_CANVAS.x + 1541.0 * TV_CANVAS.w / 2048.0,
@@ -121,26 +153,25 @@ pub fn draw_power_indicator(scaling: &Scaling, brightness: f32) {
     );
     let radius = (14.0 * scaling.scale).clamp(4.0, 18.0);
     let brightness = brightness.clamp(0.0, 1.0);
-    let color = Color::new(
-        0.08,
-        0.20 + 0.75 * brightness,
-        0.08,
-        0.35 + 0.65 * brightness,
-    );
     if brightness > 0.2 {
         draw_circle(
             center.x,
             center.y,
-            radius * 1.8,
-            Color::new(0.1, 0.8, 0.1, 0.18 * brightness),
+            radius * 1.6,
+            Color::new(0.12, 0.55, 0.15, 0.06 * brightness),
         );
     }
-    draw_circle(center.x, center.y, radius, color);
+    draw_circle(
+        center.x,
+        center.y,
+        radius,
+        power_indicator_color(brightness),
+    );
     draw_circle(
         center.x - radius * 0.28,
         center.y - radius * 0.32,
         radius * 0.22,
-        Color::new(1.0, 1.0, 1.0, 0.25 * brightness),
+        Color::new(1.0, 1.0, 1.0, 0.12 * brightness),
     );
 }
 
@@ -203,6 +234,18 @@ fn draw_fallback(scaling: &Scaling, viewport: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn power_indicator_is_opaque_and_softens_the_lit_state() {
+        let off = power_indicator_color(0.0);
+        let dim = power_indicator_color(0.15);
+        let on = power_indicator_color(1.0);
+        assert_eq!((off.a, dim.a, on.a), (1.0, 1.0, 1.0));
+        assert!(off.g < dim.g && dim.g < on.g);
+        assert!(on.g < 0.6 && on.g > on.r && on.g > on.b);
+        assert_eq!(power_indicator_color(-1.0), off);
+        assert_eq!(power_indicator_color(2.0), on);
+    }
 
     #[test]
     fn screen_backing_covers_translucent_bezel_edge() {
