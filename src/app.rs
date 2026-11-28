@@ -13,7 +13,9 @@ use crate::{
     assets::{AssetManager, TvAssets},
     autoload::{AutoLoad, LoadMode},
     bezel,
-    config::{RenderLayer, INITIAL_WINDOW_HEIGHT, INITIAL_WINDOW_WIDTH, RENDER_ORDER},
+    config::{
+        self, Preferences, RenderLayer, INITIAL_WINDOW_HEIGHT, INITIAL_WINDOW_WIDTH, RENDER_ORDER,
+    },
     crt::{self, Crt},
     crt_calibration::CrtCalibration,
     crt_polish::CrtPolish,
@@ -139,7 +141,56 @@ impl Default for AppState {
     }
 }
 
+struct WindowRestore {
+    target: (i32, i32),
+    next_request: f64,
+    attempts: u8,
+    abandoned_size: Option<(i32, i32)>,
+}
+
+enum WindowRestoreAction {
+    Wait,
+    Resize,
+    Settled,
+}
+
+impl WindowRestore {
+    fn new(target: (i32, i32), now: f64) -> Self {
+        Self {
+            target,
+            next_request: now + 0.75,
+            attempts: 0,
+            abandoned_size: None,
+        }
+    }
+
+    fn update(&mut self, now: f64, size: (i32, i32)) -> WindowRestoreAction {
+        // Fullscreen and DPI transitions can temporarily report a different size.
+        if let Some(abandoned_size) = self.abandoned_size {
+            return if size != abandoned_size {
+                WindowRestoreAction::Settled
+            } else {
+                WindowRestoreAction::Wait
+            };
+        }
+        if now < self.next_request {
+            return WindowRestoreAction::Wait;
+        }
+        if self.attempts > 0 && size == self.target {
+            return WindowRestoreAction::Settled;
+        }
+        if self.attempts == 3 {
+            self.abandoned_size = Some(size);
+            return WindowRestoreAction::Wait;
+        }
+        self.attempts += 1;
+        self.next_request = now + 0.75;
+        WindowRestoreAction::Resize
+    }
+}
+
 pub async fn run() {
+    prevent_quit();
     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
         Ok(time) => macroquad::rand::srand(time.as_nanos() as u64),
         Err(error) => eprintln!("Could not seed startup variation from the system clock: {error}"),
@@ -190,6 +241,25 @@ pub async fn run() {
         crt_polish,
         crt_calibration,
     };
+    let (mut preferences, preferences_path, preference_error) = match config::startup_preferences()
+    {
+        Ok(preferences) => match config::preferences_path() {
+            Ok(path) => (preferences.clone(), Some(path), None),
+            Err(error) => (preferences.clone(), None, Some(error)),
+        },
+        Err(error) => (Preferences::default(), None, Some(error.clone())),
+    };
+    preferences.apply(&mut app.state, &mut app.experience);
+    if preferences.tape_sound() {
+        match TapeAudio::open() {
+            Ok(audio) => {
+                app.tape_audio = Some(audio);
+            }
+            Err(error) => app.notify(format!(
+                "Cannot restore tape sound: {error}; toggle it off and on to retry."
+            )),
+        }
+    }
     let mut args = std::env::args_os().skip(1);
     if let Some(argument) = args.next() {
         if argument == "--rom" {
@@ -214,9 +284,64 @@ pub async fn run() {
             app.notify(format!("Could not load ROM {}: {error}", path.display()));
         }
     }
+    if let Some(error) = preference_error {
+        app.notify(format!("{error}; preferences will not be saved."));
+    }
+    let mut last_attempted = preferences.clone();
+    let mut last_observed = preferences.clone();
+    let mut last_change = get_time();
+    let mut window_restore: Option<WindowRestore> = None;
+    let mut previous_fullscreen = app.state.fullscreen;
     loop {
         app.update();
+        let now = get_time();
+        if app.state.fullscreen != previous_fullscreen {
+            previous_fullscreen = app.state.fullscreen;
+            window_restore = if app.state.fullscreen {
+                None
+            } else {
+                Some(WindowRestore::new(preferences.window_size(), now))
+            };
+        }
+        let current_size = (
+            screen_width().round() as i32,
+            screen_height().round() as i32,
+        );
+        let size = if app.state.fullscreen {
+            None
+        } else if let Some(restore) = &mut window_restore {
+            match restore.update(now, current_size) {
+                WindowRestoreAction::Wait => None,
+                WindowRestoreAction::Resize => {
+                    request_new_screen_size(restore.target.0 as f32, restore.target.1 as f32);
+                    None
+                }
+                WindowRestoreAction::Settled => {
+                    window_restore = None;
+                    Some(current_size)
+                }
+            }
+        } else {
+            Some(current_size)
+        };
+        preferences.capture(&app.state, &app.experience, size);
+        if preferences != last_observed {
+            last_observed = preferences.clone();
+            last_change = now;
+        }
+        let quitting = is_quit_requested();
+        if preferences != last_attempted && (quitting || now - last_change >= 0.5) {
+            if let Some(path) = &preferences_path {
+                if let Err(error) = config::save_preferences(path, &preferences) {
+                    app.notify(error);
+                }
+            }
+            last_attempted = preferences.clone();
+        }
         app.draw();
+        if quitting {
+            break;
+        }
         next_frame().await;
     }
 }
@@ -553,7 +678,7 @@ impl App {
             }
         };
         let dialog = rfd::AsyncFileDialog::new()
-            .set_title("Browse Emulator Games Library")
+            .set_title("Browse Membrane81 Games Library")
             .add_filter("ZX81 program", &["p", "P"])
             .set_directory(&directory);
         #[cfg(target_os = "linux")]
@@ -773,16 +898,18 @@ impl App {
                 });
             }
             Some(Action::TapeSound) => {
-                if self.tape_audio.is_some() {
+                if self.state.tape_sound {
                     self.tape_audio = None;
                     self.state.tape_sound = false;
                 } else {
+                    self.state.tape_sound = true;
                     match TapeAudio::open() {
                         Ok(audio) => {
                             self.tape_audio = Some(audio);
-                            self.state.tape_sound = true;
                         }
-                        Err(error) => self.notify(format!("Cannot enable tape sound: {error}")),
+                        Err(error) => self.notify(format!(
+                            "Cannot enable tape sound: {error}; toggle it off and on to retry."
+                        )),
                     }
                 }
             }
@@ -797,7 +924,15 @@ impl App {
                 }
             }
             Some(Action::Screenshot) => self.screenshot_requested = true,
-            Some(Action::About) => self.about.open = true,
+            Some(Action::About) => self.about.open_about(),
+            Some(Action::Memorial) => {
+                if let Some(image) = AssetManager::new().load_texture_safe("memorial colorised.png")
+                {
+                    self.about.open_memorial(image);
+                } else {
+                    self.notify("Cannot open the memorial image; check the assets directory.");
+                }
+            }
             Some(Action::Settings) => self.state.show_settings = !self.state.show_settings,
             Some(Action::Setting(index)) => {
                 ui::activate_setting(index, &mut self.state, &mut self.experience);
@@ -1123,8 +1258,9 @@ impl App {
 
     fn disable_tape_audio(&mut self, error: String) {
         self.tape_audio = None;
-        self.state.tape_sound = false;
-        self.notify(format!("Tape sound disabled: {error}"));
+        self.notify(format!(
+            "Tape sound unavailable: {error}; toggle it off and on to retry."
+        ));
     }
 
     fn draw(&mut self) {
@@ -1301,7 +1437,7 @@ impl App {
                     }
                     if self.state.scanlines_enabled && effects.scanlines > 0.0 {
                         self.crt.draw_scanlines(
-                            image,
+                            screen,
                             effects.scanlines * self.state.scanline_strength,
                         );
                     }
@@ -1557,7 +1693,7 @@ fn draw_scene_title(scene: Rect, monitor: Rect, texture: Option<&Texture2D>) {
     let right = monitor.x + monitor.w * 0.98;
     for (text, size, baseline, color) in [
         (
-            "EMULATOR-81",
+            "MEMBRANE81",
             0.052,
             0.0658,
             Color::from_rgba(250, 73, 36, 255),
@@ -1730,6 +1866,47 @@ fn write_screenshot_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_restore_retries_dpi_transitions_without_saving_fullscreen_size() {
+        let mut restore = WindowRestore::new((960, 720), 0.0);
+        assert!(matches!(
+            restore.update(0.5, (1920, 1080)),
+            WindowRestoreAction::Wait
+        ));
+        assert!(matches!(
+            restore.update(0.75, (1920, 1080)),
+            WindowRestoreAction::Resize
+        ));
+        assert!(matches!(
+            restore.update(1.5, (1575, 1181)),
+            WindowRestoreAction::Resize
+        ));
+        assert!(matches!(
+            restore.update(2.25, (960, 720)),
+            WindowRestoreAction::Settled
+        ));
+
+        let mut refused = WindowRestore::new((960, 720), 0.0);
+        for time in [0.75, 1.5, 2.25] {
+            assert!(matches!(
+                refused.update(time, (1920, 1011)),
+                WindowRestoreAction::Resize
+            ));
+        }
+        assert!(matches!(
+            refused.update(3.0, (1920, 1011)),
+            WindowRestoreAction::Wait
+        ));
+        assert!(matches!(
+            refused.update(4.0, (1920, 1011)),
+            WindowRestoreAction::Wait
+        ));
+        assert!(matches!(
+            refused.update(4.1, (1000, 750)),
+            WindowRestoreAction::Settled
+        ));
+    }
 
     #[test]
     fn wav_filename_adds_or_validates_extension() {
@@ -2250,6 +2427,23 @@ mod tests {
                 [255; 4]
             );
 
+            let target = begin_screenshot_capture().unwrap();
+            clear_background(BLUE);
+            let mut dialog = About::new();
+            dialog.open_memorial(Texture2D::from_image(&Image::gen_image_color(4, 2, RED)));
+            dialog.draw();
+            let capture =
+                finish_screenshot_capture(&target, Rect::new(0.0, 0.0, 800.0, 600.0)).unwrap();
+            let memorial_pixel = capture.get_pixel(400, 300).0;
+            assert!(memorial_pixel[0] > 220 && memorial_pixel[1] < 50 && memorial_pixel[2] < 65);
+            let target = begin_screenshot_capture().unwrap();
+            clear_background(BLUE);
+            dialog.open_about();
+            dialog.draw();
+            let capture =
+                finish_screenshot_capture(&target, Rect::new(0.0, 0.0, 800.0, 600.0)).unwrap();
+            assert_ne!(capture.get_pixel(400, 300).0, memorial_pixel);
+
             let mut pipeline = RenderPipeline::with_screen(screen);
             let target = begin_screenshot_capture().unwrap();
             clear_background(BLACK);
@@ -2389,6 +2583,70 @@ mod tests {
                             .sum()
                     };
                     assert!(luminance(&with_scanlines) < luminance(&capture));
+                    app.state.scanlines_enabled = false;
+                }
+            }
+
+            let mut mixed_pixels =
+                vec![255; crate::emulator::SCREEN_WIDTH * crate::emulator::SCREEN_HEIGHT];
+            for (y, row) in mixed_pixels
+                .chunks_exact_mut(crate::emulator::SCREEN_WIDTH)
+                .enumerate()
+            {
+                if y == 0 || y == crate::emulator::SCREEN_HEIGHT - 1 {
+                    row.fill(0);
+                } else {
+                    row[0] = 0;
+                    row[crate::emulator::SCREEN_WIDTH - 1] = 0;
+                }
+            }
+            app.emulator.write_display_buffer(&mixed_pixels).unwrap();
+            for focused in [false, true] {
+                app.state.screen_focused = focused;
+                app.screenshot_requested = true;
+                app.draw();
+                let capture = app.pending_screenshot.take().unwrap();
+                let (w, h) = capture.dimensions();
+                for (x, y) in [
+                    (w / 2, h / 100),
+                    (w / 2, h - h / 100 - 1),
+                    (w / 100, h / 2),
+                    (w - w / 100 - 1, h / 2),
+                ] {
+                    assert!(
+                        capture.get_pixel(x, y).0[0] > 190,
+                        "grey surround at {x},{y}"
+                    );
+                }
+                if focused {
+                    app.state.scanlines_enabled = true;
+                    app.state.scanline_strength = 1.0;
+                    app.screenshot_requested = true;
+                    app.draw();
+                    let scanlines = app.pending_screenshot.take().unwrap();
+                    let darkness = |x: u32| -> u64 {
+                        (h / 4..h * 3 / 4)
+                            .map(|y| {
+                                u64::from(capture.get_pixel(x, y).0[0])
+                                    .saturating_sub(u64::from(scanlines.get_pixel(x, y).0[0]))
+                            })
+                            .sum()
+                    };
+                    let surround = darkness(w / 100);
+                    let display = darkness(w / 2);
+                    assert!(display > 0 && surround * 4 >= display * 3);
+                    for x in 0..w / 100 {
+                        for y in 0..h / 100 {
+                            for (x, y) in [
+                                (x, y),
+                                (w - x - 1, y),
+                                (x, h - y - 1),
+                                (w - x - 1, h - y - 1),
+                            ] {
+                                assert_eq!(capture.get_pixel(x, y), scanlines.get_pixel(x, y));
+                            }
+                        }
+                    }
                     app.state.scanlines_enabled = false;
                 }
             }

@@ -17,17 +17,17 @@ use Style::{Bold, Italic, Regular};
 
 const PARAGRAPHS: &[&[(&str, Style)]] = &[
     &[
-        ("Emulator-81", Bold),
+        ("Membrane81", Bold),
         (" is a modern Sinclair ZX81 emulator built with ", Regular),
         ("Rust", Bold),
         (" and ", Regular),
         ("Macroquad", Bold),
         (".", Regular),
     ],
-    &[("Designed primarily for Linux while remaining portable across platforms, Emulator-81 features a scalable CRT-style display, integrated software library, and support for loading and saving ZX81 .P program files.", Regular)],
+    &[("Designed primarily for Linux while remaining portable across platforms, Membrane81 features a scalable CRT-style display, integrated software library, and support for loading and saving ZX81 .P program files.", Regular)],
     &[("Inspired by one of the most innovative home computers ever created, this project aims to preserve and explore the unique architecture of the Sinclair ZX81 while providing a practical way to run original software on modern systems.", Regular)],
     &[
-        ("Emulator-81 was conceived, designed, and developed by ", Regular),
+        ("Membrane81 was conceived, designed, and developed by ", Regular),
         ("Neil Feltham", Bold),
         (". The software has been created using ", Regular),
         ("Microsoft Copilot AI", Bold),
@@ -84,6 +84,7 @@ impl Fonts {
 
 pub struct About {
     pub open: bool,
+    memorial: Option<Texture2D>,
     fonts: Fonts,
     layout: Layout,
     offset: Vec2,
@@ -106,6 +107,7 @@ impl About {
         let layout = build_layout(|text, style, size| fonts.measure(text, style, size));
         Self {
             open: false,
+            memorial: None,
             fonts,
             layout,
             offset: Vec2::ZERO,
@@ -117,9 +119,21 @@ impl About {
         Self::panel_rect(
             screen_width(),
             screen_height(),
-            self.layout.height,
+            self.memorial.as_ref().map_or(self.layout.height, |image| {
+                memorial_height(image.width(), image.height())
+            }),
             self.offset,
         )
+    }
+
+    pub fn open_about(&mut self) {
+        self.memorial = None;
+        self.open = true;
+    }
+
+    pub fn open_memorial(&mut self, image: Texture2D) {
+        self.memorial = Some(image);
+        self.open = true;
     }
 
     fn panel_rect(width: f32, height: f32, content_height: f32, offset: Vec2) -> Rect {
@@ -204,39 +218,61 @@ impl About {
             scale,
             ui::ACCENT,
         );
-        draw_line(
-            panel.x + PADDING * scale,
-            panel.y + self.layout.divider_y * scale,
-            panel.x + (WIDTH - PADDING) * scale,
-            panel.y + self.layout.divider_y * scale,
-            scale,
-            ui::BORDER,
-        );
-        for line in &self.layout.lines {
-            let left = if line.centered {
-                (WIDTH - line.width) / 2.0
-            } else {
-                PADDING
-            };
-            let mut x = panel.x + left * scale;
-            for fragment in &line.fragments {
-                draw_text_ex(
-                    &fragment.text,
-                    x,
-                    panel.y + line.baseline * scale,
-                    TextParams {
-                        font: Some(self.fonts.get(fragment.style)),
-                        font_size: FONT_SIZE,
-                        font_scale: line.size * scale / FONT_SIZE as f32,
-                        color: if fragment.style == Italic {
-                            ui::MUTED
-                        } else {
-                            ui::TEXT
+        if let Some(image) = &self.memorial {
+            ui::text(
+                "In Memory",
+                panel.x + PADDING * scale,
+                panel.y + 40.0 * scale,
+                24.0 * scale,
+                ui::TEXT,
+                &self.fonts.bold,
+            );
+            let image_rect = memorial_image_rect(panel, image.width(), image.height());
+            draw_texture_ex(
+                image,
+                image_rect.x,
+                image_rect.y,
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(vec2(image_rect.w, image_rect.h)),
+                    ..Default::default()
+                },
+            );
+        } else {
+            draw_line(
+                panel.x + PADDING * scale,
+                panel.y + self.layout.divider_y * scale,
+                panel.x + (WIDTH - PADDING) * scale,
+                panel.y + self.layout.divider_y * scale,
+                scale,
+                ui::BORDER,
+            );
+            for line in &self.layout.lines {
+                let left = if line.centered {
+                    (WIDTH - line.width) / 2.0
+                } else {
+                    PADDING
+                };
+                let mut x = panel.x + left * scale;
+                for fragment in &line.fragments {
+                    draw_text_ex(
+                        &fragment.text,
+                        x,
+                        panel.y + line.baseline * scale,
+                        TextParams {
+                            font: Some(self.fonts.get(fragment.style)),
+                            font_size: FONT_SIZE,
+                            font_scale: line.size * scale / FONT_SIZE as f32,
+                            color: if fragment.style == Italic {
+                                ui::MUTED
+                            } else {
+                                ui::TEXT
+                            },
+                            ..Default::default()
                         },
-                        ..Default::default()
-                    },
-                );
-                x += fragment.width * scale;
+                    );
+                    x += fragment.width * scale;
+                }
             }
         }
         let cx = panel.x + (WIDTH - 27.0) * scale;
@@ -260,12 +296,27 @@ impl About {
     }
 }
 
+fn memorial_height(image_width: f32, image_height: f32) -> f32 {
+    56.0 + 2.0 * PADDING + (WIDTH - 2.0 * PADDING) * image_height / image_width
+}
+
+fn memorial_image_rect(panel: Rect, image_width: f32, image_height: f32) -> Rect {
+    let scale = panel.w / WIDTH;
+    let width = (WIDTH - 2.0 * PADDING) * scale;
+    Rect::new(
+        panel.x + PADDING * scale,
+        panel.y + (56.0 + PADDING) * scale,
+        width,
+        width * image_height / image_width,
+    )
+}
+
 fn build_layout(mut measure: impl FnMut(&str, Style, f32) -> f32) -> Layout {
     let mut lines = Vec::new();
     let mut y = 40.0;
     add_text(
         &mut lines,
-        &[("About Emulator-81", Bold)],
+        &[("About Membrane81", Bold)],
         24.0,
         &mut y,
         false,
@@ -279,7 +330,7 @@ fn build_layout(mut measure: impl FnMut(&str, Style, f32) -> f32) -> Layout {
     let divider_y = y - 3.0;
     y += 20.0;
     for footer in [
-        &[("Emulator-81", Bold)][..],
+        &[("Membrane81", Bold)][..],
         &[("Version 0.3.0 Alpha", Bold)][..],
         &[
             ("Designed and Developed by ", Regular),
@@ -384,14 +435,14 @@ mod tests {
                     .collect::<Vec<_>>()
             })
             .collect();
-        let mut expected = String::from("About Emulator-81 ");
+        let mut expected = String::from("About Membrane81 ");
         for paragraph in PARAGRAPHS {
             for (text, _) in *paragraph {
                 expected.push_str(text);
             }
             expected.push(' ');
         }
-        expected.push_str("Emulator-81 Version 0.3.0 Alpha Designed and Developed by Neil Feltham Built with Rust • Macroquad • Microsoft Copilot AI Preserving the Sinclair ZX81 for modern systems while exploring the future of AI-assisted software development.");
+        expected.push_str("Membrane81 Version 0.3.0 Alpha Designed and Developed by Neil Feltham Built with Rust • Macroquad • Microsoft Copilot AI Preserving the Sinclair ZX81 for modern systems while exploring the future of AI-assisted software development.");
         assert_eq!(actual, expected.split_whitespace().collect::<Vec<_>>());
         assert!(layout.lines.iter().any(|line| line
             .fragments
@@ -418,6 +469,22 @@ mod tests {
                     panel.y + layout.lines.last().unwrap().baseline * scale < panel.y + panel.h
                 );
             }
+        }
+    }
+
+    #[test]
+    fn memorial_fits_the_window_without_cropping_or_distorting_the_image() {
+        let (image_width, image_height) = (1536.0, 1024.0);
+        let height = memorial_height(image_width, image_height);
+        for (width, window_height) in [(800.0, 600.0), (320.0, 240.0), (400.0, 900.0)] {
+            let panel = About::panel_rect(width, window_height, height, Vec2::ZERO);
+            let image = memorial_image_rect(panel, image_width, image_height);
+            assert!(panel.x >= 0.0 && panel.y >= 0.0);
+            assert!(panel.x + panel.w <= width && panel.y + panel.h <= window_height);
+            assert!(image.x >= panel.x && image.y >= panel.y);
+            assert!(image.x + image.w <= panel.x + panel.w);
+            assert!(image.y + image.h <= panel.y + panel.h);
+            assert!((image.w / image.h - image_width / image_height).abs() < 0.0001);
         }
     }
 }

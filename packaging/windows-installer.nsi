@@ -1,15 +1,15 @@
 Unicode true
 !include "MUI2.nsh"
 
-!define APP_NAME "Emulator-81"
+!define APP_NAME "Membrane81"
 !define APP_VERSION "0.1.0"
-!define APP_EXE "zx81_emulator.exe"
+!define APP_EXE "membrane81.exe"
 !define PROJECT_ROOT "${__FILEDIR__}/.."
 !ifndef WINDOWS_BINARY
 !define WINDOWS_BINARY "target/x86_64-pc-windows-gnu/release/${APP_EXE}"
 !endif
 !ifndef INSTALLER_OUTPUT
-!define INSTALLER_OUTPUT "${PROJECT_ROOT}/dist/Emulator-81-Setup.exe"
+!define INSTALLER_OUTPUT "${PROJECT_ROOT}/dist/Membrane81-Setup.exe"
 !endif
 
 !cd "${PROJECT_ROOT}"
@@ -32,7 +32,7 @@ RequestExecutionLevel admin
 Section "Install"
   SetOutPath "$INSTDIR"
   File "${WINDOWS_BINARY}"
-  File "packaging/emulator-81.ico"
+  File "packaging/membrane81.ico"
 
   SetOutPath "$INSTDIR\rom"
   File "rom/zx81.rom"
@@ -44,13 +44,13 @@ Section "Install"
   File /r "Games Library/*"
 
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"
-  CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\emulator-81.ico"
+  CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\membrane81.ico"
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKLM "Software\${APP_NAME}" "InstallDir" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "DisplayName" "${APP_NAME}"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "DisplayIcon" "$INSTDIR\emulator-81.ico"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "DisplayIcon" "$INSTDIR\membrane81.ico"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "DisplayVersion" "${APP_VERSION}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "UninstallString" '"$INSTDIR\Uninstall.exe"'

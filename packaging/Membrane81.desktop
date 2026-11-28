@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Membrane81
+Exec=membrane81
+Icon=Membrane81
+StartupWMClass=Membrane81
+Terminal=false
+Categories=Game;Emulator;

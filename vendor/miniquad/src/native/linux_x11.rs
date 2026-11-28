@@ -261,8 +261,6 @@ impl X11Display {
         }
     }
 
-    // TODO: right now it just exits early if fullscreen is false.
-    // should be able to able to go back from fullscreen to windowed instead
     unsafe fn set_fullscreen(&mut self, window: Window, fullscreen: bool) {
         let wm_state = (self.libx11.XInternAtom)(
             self.display,
@@ -271,46 +269,16 @@ impl X11Display {
         );
         let wm_fullscreen = (self.libx11.XInternAtom)(
             self.display,
-            if fullscreen {
-                b"_NET_WM_STATE_FULLSCREEN\x00" as *const u8 as *const _
-            } else {
-                b"\x00" as *const u8 as *const _
-            },
+            b"_NET_WM_STATE_FULLSCREEN\x00" as *const u8 as *const _,
             false as _,
         );
-
-        // this is the first method to make window fullscreen
-        // hide it, change _NET_WM_STATE_FULLSCREEN property and than show it back
-        // someone on stackoverflow mentioned that this is not working on ubuntu/unity though
-        {
-            (self.libx11.XLowerWindow)(self.display, window);
-            (self.libx11.XUnmapWindow)(self.display, window);
-            (self.libx11.XSync)(self.display, false as _);
-
-            let mut atoms: [Atom; 2] = [wm_fullscreen, 0 as _];
-            (self.libx11.XChangeProperty)(
-                self.display,
-                window,
-                wm_state,
-                4 as _,
-                32,
-                PropModeReplace,
-                atoms.as_mut_ptr() as *mut _ as *mut _,
-                1,
-            );
-            (self.libx11.XMapWindow)(self.display, window);
-            (self.libx11.XRaiseWindow)(self.display, window);
-            (self.libx11.XFlush)(self.display);
-        }
-
-        // however, this is X, so just in case - the second method
-        // send ClientMessage to the window with request to change property to fullscreen
         {
             let mut data = [0isize; 5];
 
-            data[0] = 1;
+            data[0] = if fullscreen { 1 } else { 0 };
             data[1] = wm_fullscreen as isize;
             data[2] = 0;
+            data[3] = 1;
 
             let mut ev = XClientMessageEvent {
                 type_0: 33,
@@ -331,6 +299,7 @@ impl X11Display {
                 (1048576 | 131072) as _,
                 &mut ev as *mut XClientMessageEvent as *mut _,
             );
+            (self.libx11.XFlush)(self.display);
         }
     }
 

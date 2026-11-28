@@ -129,21 +129,7 @@ impl EmulatorCore {
         let Some(pixels) = &self.display_buffer else {
             return 0.0;
         };
-        let top = &pixels[..SCREEN_WIDTH];
-        let bottom = &pixels[(SCREEN_HEIGHT - 1) * SCREEN_WIDTH..];
-        let horizontal: u32 = top
-            .iter()
-            .chain(bottom)
-            .map(|&value| u32::from(value))
-            .sum();
-        let vertical: u32 = pixels
-            .chunks_exact(SCREEN_WIDTH)
-            .skip(1)
-            .take(SCREEN_HEIGHT - 2)
-            .map(|row| u32::from(row[0]) + u32::from(row[SCREEN_WIDTH - 1]))
-            .sum();
-        let count = 2 * SCREEN_WIDTH + 2 * (SCREEN_HEIGHT - 2);
-        (horizontal + vertical) as f32 / (count as f32 * 255.0)
+        pixels.iter().copied().max().unwrap_or(0) as f32 / 255.0
     }
 
     pub fn cpu_snapshot(&self) -> Option<CpuSnapshot> {
@@ -576,15 +562,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn border_luminance_follows_display_edges_and_blank_signal() {
+    fn border_luminance_matches_brightest_pixel_and_blank_signal() {
         let mut core = EmulatorCore::new();
         assert_eq!(core.display_border_luminance(), 0.0);
-        let mut pixels = vec![255; SCREEN_WIDTH * SCREEN_HEIGHT];
-        for row in pixels.chunks_exact_mut(SCREEN_WIDTH) {
-            row[SCREEN_WIDTH - 1] = 0;
-        }
+        let mut pixels = vec![0; SCREEN_WIDTH * SCREEN_HEIGHT];
+        pixels[SCREEN_WIDTH + 1] = 255;
         core.write_display_buffer(&pixels).unwrap();
-        assert!((0.7..0.9).contains(&core.display_border_luminance()));
+        assert_eq!(core.display_border_luminance(), 1.0);
+        pixels[SCREEN_WIDTH + 1] = 128;
+        core.write_display_buffer(&pixels).unwrap();
+        assert_eq!(core.display_border_luminance(), 128.0 / 255.0);
         pixels.fill(0);
         core.write_display_buffer(&pixels).unwrap();
         assert_eq!(core.display_border_luminance(), 0.0);

@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Emulator-81
-Exec=zx81_emulator
-Icon=Emulator-81
-StartupWMClass=Emulator-81
-Terminal=false
-Categories=Game;Emulator;

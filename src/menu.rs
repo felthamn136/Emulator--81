@@ -41,6 +41,7 @@ pub enum Action {
     GridBackground,
     ScreenFocused,
     About,
+    Memorial,
     RamSize(RamSize),
     Wobble,
     WobbleSeverity(WobbleSeverity),
@@ -93,7 +94,10 @@ const VIEW: &[(&str, Action)] = &[
     ("Red grid background", Action::GridBackground),
     ("Screen-focused view", Action::ScreenFocused),
 ];
-const HELP: &[(&str, Action)] = &[("About Emulator-81", Action::About)];
+const HELP: &[(&str, Action)] = &[
+    ("About Membrane81", Action::About),
+    ("In Memory", Action::Memorial),
+];
 const HARDWARE: &[(&str, Action)] = &[
     ("RAM Pack Wobble", Action::Wobble),
     (
@@ -528,6 +532,14 @@ mod tests {
         assert_eq!(
             menu.click(vec2(dropdown.x + 10.0, BAR_HEIGHT + 5.0), 800.0),
             (true, Some(Action::About))
+        );
+        assert_eq!(menu.click(vec2(490.0, 10.0), 800.0), (true, None));
+        assert_eq!(
+            menu.click(
+                vec2(dropdown.x + 10.0, BAR_HEIGHT + ROW_HEIGHT + 5.0),
+                800.0
+            ),
+            (true, Some(Action::Memorial))
         );
     }
 

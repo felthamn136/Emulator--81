@@ -1,6 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use zx81_emulator::{app, config, config::window_conf, virtual_keyboard};
+use membrane81::{app, config, config::window_conf, virtual_keyboard};
 
 #[macroquad::main(window_conf)]
 async fn main() {

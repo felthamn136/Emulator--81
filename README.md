@@ -1,8 +1,8 @@
-# Emulator-81
+# Membrane81
 
-![EMULATOR-81 ZX81 Emulator repository banner](assets/repository-banner.png)
+<img src="assets/repository-banner.png" alt="Membrane81 ZX81 emulator repository banner" width="100%">
 
-Emulator-81 is an experimental Sinclair ZX81 emulator built with Rust and
+Membrane81 is an experimental Sinclair ZX81 emulator built with Rust and
 Macroquad. It is designed for native Linux use and also targets Windows and
 macOS. The project explores ZX81 hardware, retro computing and AI-assisted
 development.
@@ -11,7 +11,7 @@ The emulator loads `rom/zx81.rom` automatically when available. Without a ROM,
 it displays a visual simulation but cannot run programs. Emulation is not
 cycle-accurate, and software compatibility is not guaranteed.
 
-Emulator-81 was conceived, designed and developed by Neil Feltham using
+Membrane81 was conceived, designed and developed by Neil Feltham using
 Microsoft Copilot AI, with architectural planning, testing and iterative
 refinement.
 
@@ -47,14 +47,15 @@ SDK; no macOS installer is currently provided.
 
 ## Release packages
 
-The packages in `dist/` include the ROM, artwork and games library. Rebuild
-them to include later source or artwork changes.
+The checked-in `dist/` packages are historical Emulator-81 releases, not
+renamed Membrane81 builds. Rebuild them to produce the packages below with
+the current source, ROM, artwork and games library.
 
 ### Linux AppImage
 
 ```sh
-chmod +x dist/Emulator-81-x86_64.AppImage
-./dist/Emulator-81-x86_64.AppImage
+chmod +x dist/Membrane81-x86_64.AppImage
+./dist/Membrane81-x86_64.AppImage
 ```
 
 The AppImage requires a graphical session, compatible graphics and X11/XCB or
@@ -69,8 +70,8 @@ Install the bundle and its GNOME 51 runtime from Flathub:
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-flatpak install --user dist/Emulator-81-x86_64.flatpak
-flatpak run io.github.felthamn136.Emulator81
+flatpak install --user dist/Membrane81-x86_64.flatpak
+flatpak run io.github.felthamn136.Membrane81
 ```
 
 ### Linux Snap
@@ -79,39 +80,39 @@ The locally built Snap is unsigned. Install only a bundle you trust:
 
 ```sh
 sudo snap install mesa-2604
-sudo snap install --dangerous dist/Emulator-81-x86_64.snap
-snap run emulator-81
+sudo snap install --dangerous dist/Membrane81-x86_64.snap
+snap run membrane81
 ```
 
 The Snap uses the `core26` base and the `mesa-2604` graphics provider. If the
 graphics plug is not connected automatically, run:
 
 ```sh
-sudo snap connect emulator-81:gpu-2604 mesa-2604:gpu-2604
+sudo snap connect membrane81:gpu-2604 mesa-2604:gpu-2604
 ```
 
 ### Windows installer
 
-Run `dist/Emulator-81-Setup.msi`. The unsigned installer may trigger a Windows
+Run `dist/Membrane81-Setup.msi`. The unsigned installer may trigger a Windows
 warning. An optional desktop shortcut is available during setup and is removed
 on uninstall.
 
 Uninstall any older NSIS-based installation first; the WiX installer does not
 replace it automatically. The default installation folder is
-`C:\Program Files\Emulator-81`. To choose another folder:
+`C:\Program Files\Membrane81`. To choose another folder:
 
 ```powershell
-msiexec /i dist\Emulator-81-Setup.msi INSTALLFOLDER="C:\Emulator-81"
+msiexec /i dist\Membrane81-Setup.msi INSTALLFOLDER="C:\Membrane81"
 ```
 
 ### Windows portable
 
-Extract `dist/Emulator-81-Windows-Portable-x86_64.zip` and run
-`zx81_emulator.exe`. Keep the `assets`, `rom` and `Games Library` folders
+Extract `dist/Membrane81-Windows-Portable-x86_64.zip` and run
+`membrane81.exe`. Keep the `assets`, `rom` and `Games Library` folders
 alongside the executable.
 
-Alternatively, `dist/Emulator-81-Portable-Setup.msi` installs a separate
-per-user copy under `%LOCALAPPDATA%\Emulator-81 Portable`, with the same
+Alternatively, `dist/Membrane81-Portable-Setup.msi` installs a separate
+per-user copy under `%LOCALAPPDATA%\Membrane81 Portable`, with the same
 optional desktop shortcut. Set `INSTALLFOLDER` with `msiexec` to choose another
 location. The MSI registers an installation with Windows; use the ZIP if you
 do not want an installation.
@@ -192,7 +193,7 @@ Decoding errors are reported without resetting the machine.
 | F11 | Toggle fullscreen |
 | F12 | Toggle the viewport outline and debug information |
 | Ctrl+R | Power cycle |
-| Esc | Close a menu, settings or About; cancel fullscreen confirmation; or leave fullscreen |
+| Esc | Close a menu, settings, About or the memorial; cancel fullscreen confirmation; or leave fullscreen |
 
 Use the **Machine** menu to select RAM, pause, step or reset. Changing RAM
 size resets the machine. The **Hardware** menu enables RAM Pack Wobble and
@@ -201,17 +202,29 @@ can corrupt unsaved programs. When wobble is enabled, single-step is still
 available from the Machine menu.
 
 The **Settings** menu and panel control CRT effects, tape sound and
-fullscreen confirmation. Settings last for the current run. In the panel, use
+fullscreen confirmation. These preferences, the windowed size, fullscreen,
+screen-focused view and background selection are remembered between runs.
+They are stored in `membrane81/preferences.json` under the user's
+configuration directory (for example `~/.config` on Linux). If the file
+cannot be read, the emulator reports the error and does not overwrite it.
+If the new file is absent, preferences from the previous
+`emulator-81/preferences.json` location are used; changes are saved in the
+new location. Flatpak and Snap use separate per-application sandboxes, so
+preferences from their old package identities must be copied into the new
+package's configuration directory manually.
+If tape sound cannot be restored, the emulator reports the audio error and
+tries the saved preference again on the next launch.
+In the panel, use
 Up/Down to select an option and Enter, Space or Left/Right to change it.
 Fullscreen confirmation is on by default.
 Scanlines default to 60% strength and can be adjusted in the settings panel.
 The complete 4:3 image sits inside a slightly larger rounded CRT border, so
 edge characters remain visible without cropping or warping the image. The
-surround follows the display's edge brightness and darkens when the screen is
+surround follows the display's brightest pixel and darkens when the screen is
 blank or powered off.
 
 The **View > Red grid background** toggle switches between the softened grid
-(the default) and a plain dark background for the current run.
+(the default) and a plain dark background.
 **View > Screen-focused view** hides the cabinet and logo and enlarges the
 4:3 display while retaining the enabled CRT effects. Toggle it again to return
 to the cabinet view. The cabinet controls and labels are decorative; use the
@@ -223,7 +236,10 @@ FUNCTION label on NEW LINE, then the desired function key, to enter function
 mode. **File > Save CRT Screenshot** saves the CRT with its visual effects,
 excluding the cabinet and interface overlays.
 
-The resizable window starts at 800 × 600. The scene keeps its 4:3 proportions;
+**Help > In Memory** displays the memorial artwork for Sir Clive Sinclair and
+Rick Dickinson. Close it with Escape or the window's close button.
+
+The resizable window starts at 800 × 600 until a size is saved. The scene keeps its 4:3 proportions;
 the window manager may override sizing, positioning or fullscreen requests.
 
 ## Compatibility and limitations
@@ -260,7 +276,8 @@ ZX81_ROM=/path/to/zx81.rom cargo test original_rom -- --ignored
 ZX81_ROM=/path/to/zx81.rom ZX81_PROGRAM=/path/to/program.p cargo test --release supplied_program_loads_and_runs -- --ignored
 ```
 
-Artwork is found in `ZX81_ASSETS_DIR` when set, or in an `assets` directory in
+Artwork is found in `MEMBRANE81_ASSETS_DIR` when set (or the legacy
+`ZX81_ASSETS_DIR`), or in an `assets` directory in
 the working directory, beside the executable or in the project directory.
 Missing or invalid artwork is reported and uses a procedural fallback.
 Replacement bezel layers must be square, transparent and aligned to the

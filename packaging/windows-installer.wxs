@@ -1,25 +1,27 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <?ifdef Portable?>
-    <?define PackageName = "Emulator-81 Portable"?>
+    <?define PackageName = "Membrane81 Portable"?>
     <?define PackageUpgradeCode = "e3032179-75d9-4dce-9a4a-d1dc114801c2"?>
     <?define PackageScope = "perUser"?>
     <?define PackageRoot = "LocalAppDataFolder"?>
     <?define RegistryRoot = "HKCU"?>
-    <?define RegistryKey = "Software\Emulator-81\WiX-Portable"?>
+    <?define RegistryKey = "Software\Membrane81\WiX-Portable"?>
+    <?define LegacyRegistryKey = "Software\Emulator-81\WiX-Portable"?>
   <?else?>
-    <?define PackageName = "Emulator-81"?>
+    <?define PackageName = "Membrane81"?>
     <?define PackageUpgradeCode = "e6056ddc-a567-499a-b5ee-09f8974aedf5"?>
     <?define PackageScope = "perMachine"?>
     <?define PackageRoot = "ProgramFiles64Folder"?>
     <?define RegistryRoot = "HKLM"?>
-    <?define RegistryKey = "Software\Emulator-81\WiX"?>
+    <?define RegistryKey = "Software\Membrane81\WiX"?>
+    <?define LegacyRegistryKey = "Software\Emulator-81\WiX"?>
   <?endif?>
   <Package Name="$(PackageName)" Manufacturer="Neil Feltham" Version="0.1.0"
            UpgradeCode="$(PackageUpgradeCode)" Scope="$(PackageScope)">
     <MajorUpgrade AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="A newer version of $(PackageName) is already installed." />
     <MediaTemplate EmbedCab="yes" />
-    <Icon Id="ApplicationIcon.ico" SourceFile="$(ProjectRoot)\packaging\emulator-81.ico" />
+    <Icon Id="ApplicationIcon.ico" SourceFile="$(ProjectRoot)\packaging\membrane81.ico" />
     <Property Id="ARPPRODUCTICON" Value="ApplicationIcon.ico" />
     <Property Id="INSTALLFOLDER">
       <RegistrySearch Id="PreviousInstallFolder" Root="$(RegistryRoot)"
@@ -30,6 +32,18 @@
       <RegistrySearch Id="PreviousDesktopShortcut" Root="$(RegistryRoot)"
                       Key="$(RegistryKey)" Name="DesktopShortcut" Type="raw" />
     </Property>
+    <Property Id="LEGACYINSTALLFOLDER">
+      <RegistrySearch Id="LegacyInstallFolder" Root="$(RegistryRoot)"
+                      Key="$(LegacyRegistryKey)" Name="InstallLocation" Type="raw" />
+    </Property>
+    <Property Id="LEGACYDESKTOPSHORTCUT">
+      <RegistrySearch Id="LegacyDesktopShortcut" Root="$(RegistryRoot)"
+                      Key="$(LegacyRegistryKey)" Name="DesktopShortcut" Type="raw" />
+    </Property>
+    <SetProperty Id="INSTALLFOLDER" Value="[LEGACYINSTALLFOLDER]" After="AppSearch"
+                 Condition="NOT INSTALLFOLDER AND LEGACYINSTALLFOLDER" />
+    <SetProperty Id="PREVIOUSDESKTOPSHORTCUT" Value="[LEGACYDESKTOPSHORTCUT]" After="AppSearch"
+                 Condition="NOT PREVIOUSDESKTOPSHORTCUT AND LEGACYDESKTOPSHORTCUT" />
 
     <StandardDirectory Id="$(PackageRoot)">
       <Directory Id="INSTALLFOLDER" Name="$(PackageName)">

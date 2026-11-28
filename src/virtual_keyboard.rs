@@ -71,7 +71,7 @@ pub fn is_keyboard_process() -> bool {
 
 pub fn window_conf() -> Conf {
     Conf {
-        window_title: "ZX81 Virtual Keyboard".to_owned(),
+        window_title: "Membrane81 Virtual Keyboard".to_owned(),
         window_width: 768,
         window_height: 402,
         window_resizable: true,

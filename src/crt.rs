@@ -49,6 +49,27 @@ fn rounded_rect(rect: Rect, radius: f32, color: Color) {
     }
 }
 
+fn rounded_scanline(rect: Rect, radius: f32, y: f32, height: f32, color: Color) {
+    let top = y.max(rect.y);
+    let bottom = (y + height).min(rect.y + rect.h);
+    if bottom <= top {
+        return;
+    }
+    let edge_distance = (top - rect.y).min(rect.y + rect.h - bottom);
+    let corner_distance = (radius - edge_distance).max(0.0);
+    let inset = radius
+        - (radius * radius - corner_distance * corner_distance)
+            .max(0.0)
+            .sqrt();
+    draw_rectangle(
+        rect.x + inset,
+        top,
+        rect.w - 2.0 * inset,
+        bottom - top,
+        color,
+    );
+}
+
 pub struct CrtVisuals {
     pub brightness: f32,
     pub scanlines: f32,
@@ -146,8 +167,19 @@ impl Crt {
     }
 
     pub fn draw_scanlines(&self, viewport: Rect, opacity: f32) {
+        if viewport.w <= 0.0 || viewport.h <= 0.0 {
+            return;
+        }
         const LINES: usize = 240;
         let spacing = viewport.h / LINES as f32;
+        let border = viewport.w.min(viewport.h) * 0.004;
+        let radius = viewport.w.min(viewport.h) * 0.06 - border;
+        let interior = Rect::new(
+            viewport.x + border,
+            viewport.y + border,
+            viewport.w - 2.0 * border,
+            viewport.h - 2.0 * border,
+        );
         let pixel = 1.0 / screen_dpi_scale();
         let physical_spacing = spacing / pixel;
         let strength = scanline_strength(physical_spacing, opacity);
@@ -156,24 +188,24 @@ impl Crt {
         let side_strength = (physical_spacing - 2.0).clamp(0.0, 1.0);
         for line in 0..LINES {
             let y = viewport.y + (line as f32 + 0.5) * spacing - center_height / 2.0;
-            draw_rectangle(
-                viewport.x,
+            rounded_scanline(
+                interior,
+                radius,
                 y,
-                viewport.w,
                 center_height,
                 Color::new(0.0, 0.0, 0.0, 0.09 * strength),
             );
-            draw_rectangle(
-                viewport.x,
+            rounded_scanline(
+                interior,
+                radius,
                 y - side_height,
-                viewport.w,
                 side_height,
                 Color::new(0.0, 0.0, 0.0, 0.035 * strength * side_strength),
             );
-            draw_rectangle(
-                viewport.x,
+            rounded_scanline(
+                interior,
+                radius,
                 y + center_height,
-                viewport.w,
                 side_height,
                 Color::new(0.0, 0.0, 0.0, 0.035 * strength * side_strength),
             );

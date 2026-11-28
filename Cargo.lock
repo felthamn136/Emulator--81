@@ -1098,6 +1098,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "membrane81"
+version = "0.1.0"
+dependencies = [
+ "cpal",
+ "dirs",
+ "display-info",
+ "hound",
+ "image",
+ "macroquad",
+ "rfd",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "z80",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2908,21 +2925,4 @@ dependencies = [
  "serde",
  "syn 3.0.10",
  "winnow",
-]
-
-[[package]]
-name = "zx81_emulator"
-version = "0.1.0"
-dependencies = [
- "cpal",
- "dirs",
- "display-info",
- "hound",
- "image",
- "macroquad",
- "rfd",
- "serde",
- "serde_json",
- "tempfile",
- "z80",
 ]

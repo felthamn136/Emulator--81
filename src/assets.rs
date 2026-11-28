@@ -18,7 +18,9 @@ pub struct TvAssets {
 
 impl AssetManager {
     pub fn new() -> Self {
-        let root = if let Some(path) = std::env::var_os("ZX81_ASSETS_DIR") {
+        let root = if let Some(path) = std::env::var_os("MEMBRANE81_ASSETS_DIR")
+            .or_else(|| std::env::var_os("ZX81_ASSETS_DIR"))
+        {
             PathBuf::from(path)
         } else {
             let mut candidates = vec![PathBuf::from("assets")];
