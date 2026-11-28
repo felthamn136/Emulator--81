@@ -116,14 +116,14 @@ pub fn draw_tv_bezel(assets: &TvAssets, scaling: &Scaling, viewport: Rect) {
 
 pub fn draw_control_labels(scaling: &Scaling, font: &Font) {
     let asset_scale = TV_CANVAS.w * scaling.scale / 2048.0;
-    let size = 27.0 * asset_scale;
-    if size < 6.0 {
+    let size = 21.0 * asset_scale;
+    if size < 21.0 * 6.0 / 27.0 {
         return;
     }
     for (label, x) in [("CONTROLS", 690.0), ("POWER", 1541.0)] {
         let point = scaling.point(
             TV_CANVAS.x + x * TV_CANVAS.w / 2048.0,
-            TV_CANVAS.y + 1550.0 * TV_CANVAS.h / 2048.0,
+            TV_CANVAS.y + 1554.0 * TV_CANVAS.h / 2048.0,
         );
         ui::text(
             label,
@@ -236,6 +236,63 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires an X11 graphical display on Linux"]
+    fn control_labels_fit_between_groove_and_controls() {
+        let config = Conf {
+            window_title: "Bezel label test".to_owned(),
+            window_width: 800,
+            window_height: 600,
+            platform: macroquad::miniquad::conf::Platform {
+                linux_backend: macroquad::miniquad::conf::LinuxBackend::X11Only,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        macroquad::Window::from_config(config, async {
+            let about = crate::about::About::new();
+            let target = render_target(2048, 2048);
+            for factor in [1.0, 0.5] {
+                let scale = 2048.0 / TV_CANVAS.w * factor;
+                let scaling = Scaling {
+                    scale,
+                    offset: -vec2(TV_CANVAS.x, TV_CANVAS.y) * scale,
+                };
+                set_camera(&Camera2D {
+                    render_target: Some(target.clone()),
+                    ..Camera2D::from_display_rect(Rect::new(0.0, 0.0, 2048.0, 2048.0))
+                });
+                clear_background(BLACK);
+                draw_control_labels(&scaling, about.bold_font());
+                set_default_camera();
+                let image = target.texture.get_texture_data();
+                for (left, right) in [(600.0, 790.0), (1490.0, 1590.0)] {
+                    let mut top = u32::MAX;
+                    let mut bottom = 0;
+                    let mut pixels = 0;
+                    for y in (1490.0 * factor) as u32..(1580.0 * factor) as u32 {
+                        for x in (left * factor) as u32..(right * factor) as u32 {
+                            if image.get_pixel(x, 2047 - y).r > 0.08 {
+                                top = top.min(y);
+                                bottom = bottom.max(y);
+                                pixels += 1;
+                            }
+                        }
+                    }
+                    assert!(pixels > 10, "label missing at scale {factor}");
+                    assert!(
+                        top as f32 >= 1534.0 * factor - 1.0,
+                        "label overlaps groove"
+                    );
+                    assert!(
+                        (bottom as f32) < 1558.0 * factor + 1.0,
+                        "label overlaps controls"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
     fn power_indicator_is_opaque_and_softens_the_lit_state() {
         let off = power_indicator_color(0.0);
         let dim = power_indicator_color(0.15);
@@ -263,12 +320,59 @@ mod tests {
         )
         .unwrap();
         let edge = scaling.point(
-            TV_CANVAS.x + 440.0 * TV_CANVAS.w / 2048.0,
+            TV_CANVAS.x + 463.0 * TV_CANVAS.w / 2048.0,
             TV_CANVAS.y + 960.0 * TV_CANVAS.h / 2048.0,
         );
-        assert!(image.get_pixel(440, 960).a < 0.99);
+        assert!(image.get_pixel(463, 960).a < 0.99);
         assert!(!aperture.contains(edge));
         assert!(backing.contains(edge));
+    }
+
+    #[test]
+    fn bezel_opening_fits_the_crt_without_obscuring_the_framebuffer() {
+        let artwork = Image::from_file_with_format(
+            &std::fs::read(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/bezel/tv_cabinet.png"
+            ))
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+        let scale = artwork.width() as f32 / 4096.0;
+        let screen = Rect::new(
+            SCREEN_CALIBRATION.tv_screen_x * scale,
+            SCREEN_CALIBRATION.tv_screen_y * scale,
+            SCREEN_CALIBRATION.tv_screen_width * scale,
+            SCREEN_CALIBRATION.tv_screen_height * scale,
+        );
+        let image = crate::crt::image_rect(screen);
+        for x in [image.x.floor() as u32, (image.x + image.w).ceil() as u32] {
+            for y in [image.y.floor() as u32, (image.y + image.h).ceil() as u32] {
+                assert!(artwork.get_pixel(x, y).a < 0.05, "framebuffer corner obscured");
+            }
+        }
+
+        let center_x = (screen.x + screen.w / 2.0) as u32;
+        let center_y = (screen.y + screen.h / 2.0) as u32;
+        let left = (0..screen.x as u32)
+            .rev()
+            .find(|&x| artwork.get_pixel(x, center_y).a >= 0.05)
+            .unwrap();
+        let right = ((screen.x + screen.w) as u32..artwork.width() as u32)
+            .find(|&x| artwork.get_pixel(x, center_y).a >= 0.05)
+            .unwrap();
+        let top = (0..screen.y as u32)
+            .rev()
+            .find(|&y| artwork.get_pixel(center_x, y).a >= 0.05)
+            .unwrap();
+        let bottom = ((screen.y + screen.h) as u32..artwork.height() as u32)
+            .find(|&y| artwork.get_pixel(center_x, y).a >= 0.05)
+            .unwrap();
+        assert!(screen.x - (left as f32) < screen.w * 0.04);
+        assert!(right as f32 - (screen.x + screen.w) < screen.w * 0.04);
+        assert!(screen.y - (top as f32) < screen.h * 0.025);
+        assert!(bottom as f32 - (screen.y + screen.h) < screen.h * 0.025);
     }
 
     #[test]

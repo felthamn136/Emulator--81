@@ -175,6 +175,10 @@ impl About {
         &self.fonts.regular
     }
 
+    pub fn bold_font(&self) -> &Font {
+        &self.fonts.bold
+    }
+
     pub fn draw(&self) {
         if !self.open {
             return;

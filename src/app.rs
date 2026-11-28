@@ -15,12 +15,16 @@ use crate::{
     bezel,
     config::{RenderLayer, INITIAL_WINDOW_HEIGHT, INITIAL_WINDOW_WIDTH, RENDER_ORDER},
     crt::{self, Crt},
+    crt_calibration::CrtCalibration,
+    crt_polish::CrtPolish,
+    crt_shader::CrtShader,
     debug,
     emulator::{EmulatorCore, CPU_HZ},
     experience::{Experience, ScreenState},
     hardware::ram_pack::WobbleSeverity,
     memory::RamSize,
     menu::{self, Action, Menu},
+    render_pipeline::RenderPipeline,
     scaling::Scaling,
     tape::{
         encoder::encode_program_to_pulses, signal::generate_pcm_samples, wav_loader,
@@ -141,6 +145,20 @@ pub async fn run() {
         Err(error) => eprintln!("Could not seed startup variation from the system clock: {error}"),
     }
     let manager = AssetManager::new();
+    
+    // Initialize render pipeline with default screen rect
+    // Will be recalculated during render based on actual window size
+    let initial_screen_rect = Rect::new(
+        0.0,
+        0.0,
+        INITIAL_WINDOW_WIDTH as f32,
+        INITIAL_WINDOW_HEIGHT as f32,
+    );
+    let render_pipeline = RenderPipeline::with_screen(initial_screen_rect);
+    let crt_shader = CrtShader::new();
+    let crt_polish = CrtPolish::new();
+    let crt_calibration = CrtCalibration::new();
+    
     let mut app = App {
         bezel: manager.load_bezel_assets(),
         background: manager.load_texture_safe("red_grid.png"),
@@ -167,6 +185,10 @@ pub async fn run() {
         wav_export: None,
         wav_import: None,
         wav_autoload: false,
+        render_pipeline,
+        crt_shader,
+        crt_polish,
+        crt_calibration,
     };
     let mut args = std::env::args_os().skip(1);
     if let Some(argument) = args.next() {
@@ -275,6 +297,10 @@ struct App {
     wav_export: Option<std::sync::mpsc::Receiver<std::io::Result<PathBuf>>>,
     wav_import: Option<std::sync::mpsc::Receiver<WavImportEvent>>,
     wav_autoload: bool,
+    render_pipeline: RenderPipeline,
+    crt_shader: CrtShader,
+    crt_polish: CrtPolish,
+    crt_calibration: CrtCalibration,
 }
 
 impl App {
@@ -695,6 +721,7 @@ impl App {
 
     fn update(&mut self) {
         let delta = get_frame_time().max(0.0);
+        self.crt_polish.update(delta);
         self.update_wav_export();
         self.update_wav_import();
         if let Some(error) = self.tape_audio.as_ref().and_then(TapeAudio::error) {
@@ -868,6 +895,23 @@ impl App {
         }
         if is_key_pressed(KeyCode::F12) {
             self.state.show_debug = !self.state.show_debug;
+        }
+        if self.state.show_debug {
+            if is_key_pressed(KeyCode::Up) {
+                self.crt_calibration.prev_parameter(10);
+            }
+            if is_key_pressed(KeyCode::Down) {
+                self.crt_calibration.next_parameter(10);
+            }
+            if is_key_pressed(KeyCode::Left) {
+                self.crt_calibration.adjust_parameter(-0.01);
+            }
+            if is_key_pressed(KeyCode::Right) {
+                self.crt_calibration.adjust_parameter(0.01);
+            }
+            if is_key_pressed(KeyCode::R) {
+                self.crt_calibration.reset_adjustment();
+            }
         }
         if self.emulator.is_loaded() && is_key_pressed(KeyCode::F8) {
             self.paused = !self.paused;
@@ -1149,7 +1193,7 @@ impl App {
                 RenderLayer::TvCabinet if !self.state.screen_focused => {
                     bezel::draw_tv_bezel(&self.bezel, &scaling, aperture);
                     if self.bezel.tv_cabinet.is_some() {
-                        bezel::draw_control_labels(&scaling, self.about.regular_font());
+                        bezel::draw_control_labels(&scaling, self.about.bold_font());
                     }
                     bezel::draw_power_indicator(
                         &scaling,
@@ -1169,7 +1213,15 @@ impl App {
                         } else {
                             self.emulator.display_border_luminance() * effects.brightness
                         };
+                    if self.state.screen_focused || self.bezel.tv_cabinet.is_none() {
+                        draw_rectangle(screen.x, screen.y, screen.w, screen.h, BLACK);
+                    }
                     self.crt.draw_screen_frame(screen, border_luminance);
+                    
+                    // Begin rendering ZX81 display to off-screen framebuffer
+                    self.render_pipeline.begin_framebuffer_render();
+                    clear_background(BLACK);
+                    
                     let jitter = if self.experience.screen == ScreenState::Booting {
                         let t = self.experience.startup_fraction();
                         if (1.5 / 3.5..2.5 / 3.5).contains(&t) {
@@ -1183,12 +1235,16 @@ impl App {
                     } else {
                         0.0
                     };
+                    
+                    // Render the ZX81 display in logical 256x192 framebuffer coordinates.
+                    // Screen-space or CRT-safe-area coordinates belong only to presentation.
+                    let display_rect = self.render_pipeline.logical_framebuffer_rect();
                     self.emulator.render_screen(
                         Rect::new(
-                            image.x + if wobble_visual { image.w * 0.002 } else { 0.0 },
-                            image.y,
-                            image.w,
-                            image.h,
+                            display_rect.x + if wobble_visual { display_rect.w * 0.002 } else { 0.0 },
+                            display_rect.y,
+                            display_rect.w,
+                            display_rect.h,
                         ),
                         &viewport::ScreenFrame {
                             state: self.experience.screen,
@@ -1200,6 +1256,29 @@ impl App {
                             vertical_jitter: jitter,
                         },
                     );
+                    
+                    // End rendering to framebuffer and restore the scene camera
+                    self.render_pipeline.end_framebuffer_render();
+                    
+                    // Update CRT shader config from pipeline
+                    let curvature_config = crate::crt_shader::CrtShaderConfig {
+                        curvature_x: self.render_pipeline.curvature_x(),
+                        curvature_y: self.render_pipeline.curvature_y(),
+                        corner_radius: self.render_pipeline.corner_radius(),
+                        overscan: 0.05,
+                    };
+                    self.crt_shader.set_config(curvature_config);
+                    
+                    if self.render_pipeline.crt_effects().curvature_enabled {
+                        self.crt_shader.render_to_rect(
+                            self.render_pipeline.framebuffer.texture(),
+                            image,
+                            WHITE,
+                        );
+                    } else {
+                        self.render_pipeline.render_framebuffer(image, WHITE);
+                    }
+                    
                     if self.autoload.as_ref().is_some_and(AutoLoad::is_playing) {
                         if let Some(tape) = self.emulator.tape() {
                             self.crt.draw_loading_lines(image, tape, effects.brightness);
@@ -1243,14 +1322,16 @@ impl App {
                     }
                 }
                 RenderLayer::CrtShadowMask => {
-                    self.crt.draw_vignette(&self.bezel, &crt_scaling, screen)
+                    self.crt.draw_vignette(&self.bezel, &crt_scaling, screen);
                 }
-                RenderLayer::CrtGlass => self.crt.draw_glass(
-                    &self.bezel,
-                    &crt_scaling,
-                    screen,
-                    if effects.brightness > 0.0 { 1.0 } else { 0.08 },
-                ),
+                RenderLayer::CrtGlass => {
+                    self.crt.draw_glass(
+                        &self.bezel,
+                        &crt_scaling,
+                        screen,
+                        if effects.brightness > 0.0 { 1.0 } else { 0.08 },
+                    );
+                }
                 RenderLayer::CrtReflections
                     if self.state.crt_reflections_enabled && effects.reflections > 0.0 =>
                 {
@@ -1290,6 +1371,33 @@ impl App {
                 self.paused,
                 ui_font,
             );
+            
+            // CRT Calibration overlays - only draw if calibration is explicitly enabled
+            if self.crt_calibration.is_enabled() {
+                let shader_config = self.crt_shader.config();
+                let polish_config = self.crt_polish.config();
+                let safe_area_x = shader_config.overscan;
+                let safe_area_y = shader_config.overscan;
+                
+                self.crt_calibration.draw_all_overlays(
+                    aperture,
+                    safe_area_x,
+                    safe_area_y,
+                );
+                
+                self.crt_calibration.draw_control_panel(
+                    safe_area_x,
+                    safe_area_y,
+                    shader_config.curvature_x,
+                    shader_config.curvature_y,
+                    shader_config.corner_radius,
+                    polish_config.scanline_intensity,
+                    polish_config.vignette_intensity,
+                    polish_config.glow_intensity,
+                    polish_config.brightness,
+                    polish_config.contrast,
+                );
+            }
         }
         if self.state.show_settings {
             ui::draw_settings(&scaling, &self.state, &self.experience, ui_font);
@@ -2131,6 +2239,40 @@ mod tests {
                 [20, 210, 50, 255]
             );
 
+            let target = begin_screenshot_capture().unwrap();
+            clear_background(Color::from_rgba(0, 0, 255, 255));
+            let frame = Rect::new(10.0, 10.0, 120.0, 90.0);
+            Crt::new().draw_screen_frame(frame, 1.0);
+            let capture = finish_screenshot_capture(&target, frame).unwrap();
+            assert_eq!(capture.get_pixel(0, 0).0, [0, 0, 255, 255]);
+            assert_eq!(
+                capture.get_pixel(capture.width() / 2, capture.height() / 2).0,
+                [255; 4]
+            );
+
+            let mut pipeline = RenderPipeline::with_screen(screen);
+            let target = begin_screenshot_capture().unwrap();
+            clear_background(BLACK);
+            pipeline.begin_framebuffer_render();
+            clear_background(BLACK);
+            draw_rectangle(0.0, 0.0, 128.0, 96.0, Color::from_rgba(255, 0, 0, 255));
+            draw_rectangle(128.0, 0.0, 128.0, 96.0, Color::from_rgba(0, 255, 0, 255));
+            draw_rectangle(0.0, 96.0, 128.0, 96.0, Color::from_rgba(0, 0, 255, 255));
+            draw_rectangle(128.0, 96.0, 128.0, 96.0, WHITE);
+            pipeline.end_framebuffer_render();
+            let destination = Rect::new(40.0, 40.0, 400.0, 300.0);
+            pipeline.render_framebuffer(destination, WHITE);
+            let capture = finish_screenshot_capture(&target, destination).unwrap();
+            let (width, height) = capture.dimensions();
+            for (x, y, expected) in [
+                (width / 8, height / 8, [255, 0, 0, 255]),
+                (width * 7 / 8, height / 8, [0, 255, 0, 255]),
+                (width / 8, height * 7 / 8, [0, 0, 255, 255]),
+                (width * 7 / 8, height * 7 / 8, [255, 255, 255, 255]),
+            ] {
+                assert_eq!(capture.get_pixel(x, y).0, expected);
+            }
+
             let mut emulator = EmulatorCore::new();
             let mut pixels =
                 vec![0; crate::emulator::SCREEN_WIDTH * crate::emulator::SCREEN_HEIGHT];
@@ -2146,6 +2288,8 @@ mod tests {
             };
             let mut experience = Experience::default();
             experience.screen = ScreenState::Ready;
+            let render_pipeline = RenderPipeline::with_screen(Rect::new(0.0, 0.0, 400.0, 300.0));
+            let crt_shader = CrtShader::new();
             let mut app = App {
                 bezel: TvAssets {
                     tv_cabinet: None,
@@ -2178,6 +2322,10 @@ mod tests {
                 wav_export: None,
                 wav_import: None,
                 wav_autoload: false,
+                render_pipeline,
+                crt_shader,
+                crt_polish: CrtPolish::new(),
+                crt_calibration: CrtCalibration::new(),
             };
             app.draw();
             let screenshot = app.pending_screenshot.take().unwrap();
@@ -2208,6 +2356,42 @@ mod tests {
                 app.pending_screenshot.take().unwrap().width(),
                 cabinet_width
             );
+
+            app.emulator
+                .write_display_buffer(&vec![
+                    255;
+                    crate::emulator::SCREEN_WIDTH * crate::emulator::SCREEN_HEIGHT
+                ])
+                .unwrap();
+            for focused in [false, true] {
+                app.state.screen_focused = focused;
+                app.screenshot_requested = true;
+                app.draw();
+                let capture = app.pending_screenshot.take().unwrap();
+                for x in [10, 20, 50, 80, 90] {
+                    for y in [10, 20, 50, 80, 90] {
+                        let pixel = capture.get_pixel(
+                            capture.width() * x / 100,
+                            capture.height() * y / 100,
+                        );
+                        assert!(pixel.0[0] > 245, "unexpected layer at {x}%, {y}%: {pixel:?}");
+                    }
+                }
+                if focused {
+                    app.state.scanlines_enabled = true;
+                    app.state.scanline_strength = 1.0;
+                    app.screenshot_requested = true;
+                    app.draw();
+                    let with_scanlines = app.pending_screenshot.take().unwrap();
+                    let luminance = |image: &image::RgbaImage| -> u64 {
+                        (image.height() / 4..image.height() * 3 / 4)
+                            .map(|y| u64::from(image.get_pixel(image.width() / 2, y).0[0]))
+                            .sum()
+                    };
+                    assert!(luminance(&with_scanlines) < luminance(&capture));
+                    app.state.scanlines_enabled = false;
+                }
+            }
 
             let mut cursor_pixels =
                 vec![255; crate::emulator::SCREEN_WIDTH * crate::emulator::SCREEN_HEIGHT];

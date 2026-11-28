@@ -105,7 +105,6 @@ impl Crt {
         let radius = screen.w.min(screen.h) * 0.06;
         let border = screen.w.min(screen.h) * 0.004;
         let luminance = luminance.clamp(0.0, 1.0);
-        draw_rectangle(screen.x, screen.y, screen.w, screen.h, BLACK);
         rounded_rect(screen, radius, Color::from_rgba(54, 57, 57, 255));
         rounded_rect(
             Rect::new(
