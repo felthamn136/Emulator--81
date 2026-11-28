@@ -190,13 +190,15 @@ Display Screen
 │   ├── crt_shader.rs               ← CRT distortion effects
 │   ├── crt_polish.rs               ← CRT polish effects
 │   └── lib.rs                      ← Module export added
-├── PHASE6_COMPLETION_REPORT.md     ← Executive summary ⭐
-├── PHASE6_CODE_CHANGES.md          ← Code reference ⭐
-├── PHASE6_SUMMARY.md               ← Technical summary ⭐
-├── PHASE6_INTEGRATION_COMPLETE.md  ← Integration details ⭐
-├── CRT_CALIBRATION_GUIDE.md        ← User guide ⭐
-├── PHASE5_COMPLETION.md            ← Previous phase
-├── PHASE4_COMPLETION.md            ← Previous phase
+├── Project Documentation/
+│   └── CRT/
+│       ├── PHASE6_COMPLETION_REPORT.md     ← Executive summary ⭐
+│       ├── PHASE6_CODE_CHANGES.md          ← Code reference ⭐
+│       ├── PHASE6_SUMMARY.md               ← Technical summary ⭐
+│       ├── PHASE6_INTEGRATION_COMPLETE.md  ← Integration details ⭐
+│       ├── CRT_CALIBRATION_GUIDE.md        ← User guide ⭐
+│       ├── PHASE5_COMPLETION.md            ← Previous phase
+│       └── PHASE4_COMPLETION.md            ← Previous phase
 └── [other project files]
 ```
 

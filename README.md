@@ -23,6 +23,9 @@ refinement.
 - A virtual keyboard, CRT effects, fullscreen mode and CRT screenshots.
 - Pause, single-step, reset and a CPU debug overlay.
 
+Historical CRT development notes and test plans are in the
+[CRT documentation folder](Project%20Documentation/CRT/).
+
 ## Build and run
 
 Install a current stable Rust toolchain and run from the project directory:
